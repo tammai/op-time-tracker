@@ -1,0 +1,102 @@
+<script setup lang="ts">
+import { onMounted, ref } from 'vue'
+
+import OnboardingView from './views/OnboardingView.vue'
+import CalendarView from './views/CalendarView.vue'
+import DayEntriesModal from './components/DayEntriesModal.vue'
+import SettingsModal from './components/SettingsModal.vue'
+import CalendarHeader from './components/CalendarHeader.vue'
+import { useUiStore } from './stores/useUiStore'
+
+/**
+ * App shell — one screen.
+ *
+ * On mount we ask the main process whether credentials are configured.
+ * While that's in flight we show a neutral loading state so the onboarding
+ * form doesn't flash before the answer arrives. Configured → the single
+ * `UDashboardPanel` shell, whose one header row *is* the calendar header:
+ * month + year on the left, the month total centred, and month navigation
+ * plus the settings action on the right. The calendar body below it renders
+ * only the grid. Otherwise → `OnboardingView`, which emits `configured` once
+ * credentials are saved so we flip straight to the shell without re-querying.
+ *
+ * The header reads `useMonthTimeEntries()` — the same shared instance the grid
+ * uses — so the title, the total, and the grid can never disagree about which
+ * month is displayed.
+ *
+ * The day and settings panels are modals mounted here and opened through
+ * `useUiStore`: a calendar cell opens the day modal, the header opens
+ * settings, so their visibility can't live in either component alone.
+ */
+
+type Gate = 'loading' | 'configured' | 'onboarding'
+
+const gate = ref<Gate>('loading')
+
+const ui = useUiStore()
+
+onMounted(async () => {
+  try {
+    const has = await window.openproject.hasCredentials()
+    gate.value = has ? 'configured' : 'onboarding'
+  } catch {
+    // If the credential check itself throws (store not ready / read error),
+    // fall back to onboarding so the user can (re-)enter credentials rather
+    // than staring at a spinner forever.
+    gate.value = 'onboarding'
+  }
+})
+
+function onConfigured(): void {
+  gate.value = 'configured'
+}
+
+/** Settings cleared the credentials — hand back to onboarding. */
+function onDisconnected(): void {
+  gate.value = 'onboarding'
+}
+</script>
+
+<template>
+  <UApp>
+    <!-- Loading: avoid flashing onboarding before hasCredentials() resolves. -->
+    <div
+      v-if="gate === 'loading'"
+      class="flex h-screen items-center justify-center"
+    >
+      <div class="text-muted flex items-center gap-2">
+        <UIcon name="i-lucide-loader-circle" class="size-5 animate-spin" />
+        <span class="text-sm">Starting up…</span>
+      </div>
+    </div>
+
+    <!-- Onboarding gate: shown when no credentials are configured. -->
+    <OnboardingView
+      v-else-if="gate === 'onboarding'"
+      @configured="onConfigured"
+    />
+
+    <!-- Main shell: one top row + the calendar grid, nothing else.
+         `h-screen` because `UMain`'s own `min-h` subtracts a header height
+         that no longer applies here, and the grid needs a bounded parent to
+         divide into rows rather than overflow. -->
+    <template v-else>
+      <UMain class="flex h-screen flex-col overflow-hidden">
+        <CalendarHeader />
+        <CalendarView class="min-h-0 flex-1" />
+      </UMain>
+
+      <!-- Overlays, mounted once for the whole shell. -->
+      <DayEntriesModal
+        v-if="ui.activeDate"
+        v-model:open="ui.isDayModalOpen"
+        :date="ui.activeDate"
+      />
+
+      <SettingsModal
+        v-model:open="ui.isSettingsOpen"
+        @disconnected="onDisconnected"
+      />
+    </template>
+  </UApp>
+</template>

@@ -1,0 +1,1 @@
+../../.opencode/rules/conventions-server.md

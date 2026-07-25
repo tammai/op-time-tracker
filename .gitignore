@@ -1,0 +1,29 @@
+node_modules/
+out/
+dist/
+.vite/
+
+# Nuxt UI v4 (Vue-only) auto-generated type declarations
+auto-imports.d.ts
+components.d.ts
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor dirs
+.idea/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ESLint cache (written by the lint-fix-file.mjs PostToolUse hook)
+.eslintcache
+
+# Graphify: the graph itself is committed; cost ledger + AST cache are not
+graphify-out/cost.json
+graphify-out/cache/

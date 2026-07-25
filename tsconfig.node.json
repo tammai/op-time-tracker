@@ -1,0 +1,24 @@
+{
+  "extends": "@vue/tsconfig/tsconfig.json",
+    "include": [
+      "electron.vite.config.ts",
+      "vitest.config.ts",
+      "src/main/**/*",
+      "src/preload/**/*",
+      "src/shared/**/*"
+    ],
+    "compilerOptions": {
+      "composite": true,
+      "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node.tsbuildinfo",
+      "lib": ["ESNext"],
+      "types": ["electron-vite/node", "node"],
+      "baseUrl": ".",
+      "paths": {
+        "@main/*": ["src/main/*"],
+        "@preload/*": ["src/preload/*"],
+        "@shared/*": ["src/shared/*"],
+        "@opentracker/preload": ["src/preload/index.ts"],
+        "~~/*": ["./*"]
+      }
+    }
+}

@@ -1,0 +1,110 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm dev:*)",
+      "Bash(pnpm build:*)",
+      "Bash(pnpm lint:*)",
+      "Bash(pnpm test:*)",
+      "Bash(pnpm type-check:*)",
+      "Bash(pnpm typecheck:*)",
+      "Bash(pnpm add:*)",
+      "Bash(pnpm remove:*)",
+      "Bash(pnpm install:*)",
+      "Bash(npx electron-vite:*)",
+      "Bash(npx electron:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git pull:*)",
+      "Bash(git stash:*)",
+      "Bash(node tools/:*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/guards/bash-guard.mjs"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/guards/bugfix-test-guard.mjs"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/guards/spec-gate-guard.mjs"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Write|Edit|WebFetch|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/guards/injection-gate-guard.mjs"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/guards/lint-fix-file.mjs"
+          }
+        ]
+      },
+      {
+        "matcher": "WebFetch|mcp__.*|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/guards/injection-scan-guard.mjs"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/guards/canary-seed.mjs"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/guards/session-resume-check.mjs"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/guards/precompact-snapshot.mjs"
+          }
+        ]
+      }
+    ]
+  }
+}
