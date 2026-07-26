@@ -18,6 +18,10 @@ import {
   useUpdateTimeEntry
 } from '@renderer/composables/queries/time-entries'
 import type { TimeEntryDraft } from '@renderer/utils/time-entry-draft'
+import {
+  clampEntryHours,
+  parseTypedHours
+} from '@renderer/utils/entry-hours'
 
 /**
  * The time-entry form, rendered in the day modal's top section. One component
@@ -276,6 +280,28 @@ watch(
   { immediate: true }
 )
 
+/**
+ * Set when a typed value was above the cap, so the correction is announced
+ * instead of the number quietly changing under the user.
+ */
+const hoursCappedNotice = ref<string | null>(null)
+
+/**
+ * Apply the cap to what was *typed*, on leaving the field. Reads the input's
+ * text because `state.hours` still holds the previous value here — this runs
+ * before the component commits, its own clamp being registered after ours on
+ * the same element. Belt and braces with the schema's `max`.
+ */
+function onHoursBlur(event: FocusEvent): void {
+  const el = event.target as HTMLInputElement | null
+  const typed = parseTypedHours(el?.value ?? '')
+  if (typed === null) return
+  const capped = clampEntryHours(typed, maxHours.value)
+  hoursCappedNotice.value =
+    capped === typed ? null : `A single entry can't exceed ${maxHours.value} hours.`
+  state.value.hours = capped
+}
+
 /** Nothing to pick → the select stays disabled whatever the reason. */
 const hasNoActivityOptions = computed(() => activityItems.value.length === 0)
 
@@ -329,6 +355,17 @@ const toast = useToast()
 
 async function onSubmit(event: { data: FormState }): Promise<void> {
   saveError.value = null
+
+  // Last gate before the write. `UForm` already validated against `formSchema`,
+  // so this should be unreachable — it exists because a value above the cap was
+  // reported reaching the server, and an entry with the wrong hours is not the
+  // kind of bug that should depend on one layer behaving.
+  const hours = clampEntryHours(event.data.hours, maxHours.value)
+  if (hours !== event.data.hours) {
+    hoursCappedNotice.value = `A single entry can't exceed ${maxHours.value} hours.`
+    state.value.hours = hours
+    return
+  }
 
   // An empty comment is sent as an absent one. On create that means "no
   // comment"; on update the main process reads it as "clear the stored
@@ -469,6 +506,8 @@ async function onSubmit(event: { data: FormState }): Promise<void> {
           :step="0.25"
           :disabled="locked"
           class="w-full"
+          @blur="onHoursBlur"
+          @focus="hoursCappedNotice = null"
         />
       </UFormField>
     </div>
@@ -534,6 +573,17 @@ async function onSubmit(event: { data: FormState }): Promise<void> {
         >
           <UIcon name="i-lucide-pencil" class="size-4 shrink-0" />
           <span class="truncate">Editing entry #{{ props.draft?.id }}</span>
+        </p>
+
+        <!-- A typed value was above the cap. Sits with the other one-line
+             states of this submit rather than under the field, whose container
+             is too narrow to read a sentence in. -->
+        <p
+          v-if="hoursCappedNotice"
+          class="text-warning flex items-center gap-1.5 text-xs"
+        >
+          <UIcon name="i-lucide-alert-triangle" class="size-4 shrink-0" />
+          <span class="truncate">{{ hoursCappedNotice }}</span>
         </p>
 
         <!-- Suppressed when the activities alert above already explains the
