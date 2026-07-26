@@ -861,9 +861,8 @@ export class OpenProjectClient {
    * Throws a typed `OpenProjectError` subclass on any failure.
    *
    * Defaults to `GET`; pass `{ method, body }` to write. `body` is
-   * JSON-encoded here (never string-concatenated), and the
-   * `Content-Type` header is only sent when there is a body — so a
-   * bodyless `DELETE` doesn't claim to send JSON.
+   * JSON-encoded here (never string-concatenated). Every non-GET carries
+   * `Content-Type`, body or not — OpenProject 406s a write without it.
    *
    * The API key is never logged. The `Authorization` header is built
    * inline and lives only in this fetch. Error messages reference the
@@ -879,6 +878,13 @@ export class OpenProjectClient {
     const method = init.method ?? 'GET'
     const hasBody = init.body !== undefined
 
+    // OpenProject answers HTTP 406 ("client did not send a Content-Type
+    // header") to a write that omits it — including a bodyless DELETE, which
+    // has no body to describe. So the header goes on every non-GET request,
+    // not just the ones carrying JSON. Sending it only with a body is what
+    // made `deleteTimeEntry` fail against a real instance.
+    const sendContentType = method !== 'GET'
+
     // OpenProject API key auth: `Basic base64("apikey:<key>")`.
     // The key is a secret — never logged, never in error messages.
     const auth = `Basic ${Buffer.from(`apikey:${this.creds.apiKey}`).toString('base64')}`
@@ -893,7 +899,7 @@ export class OpenProjectClient {
         headers: {
           Authorization: auth,
           Accept: 'application/json',
-          ...(hasBody ? { 'Content-Type': 'application/json' } : {})
+          ...(sendContentType ? { 'Content-Type': 'application/json' } : {})
         },
         ...(hasBody ? { body: JSON.stringify(init.body) } : {}),
         signal: controller.signal
@@ -966,8 +972,14 @@ export class OpenProjectClient {
         res.status
       )
     }
+    // Any other 4xx. Forward OpenProject's own explanation on the same terms
+    // as the 400/422 above — only the schema-declared `message` fields, capped
+    // in length, never the raw body. A bare "returned HTTP 406" says nothing
+    // about *what* was unacceptable, which makes such a failure undiagnosable
+    // from the app and reduces debugging to guesswork.
+    const detail = extractApiErrorMessage(await res.text().catch(() => ''))
     throw new OpenProjectHttpError(
-      `The OpenProject server returned HTTP ${res.status}.`,
+      detail ?? `The OpenProject server returned HTTP ${res.status}.`,
       res.status
     )
   }

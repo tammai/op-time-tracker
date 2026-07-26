@@ -1267,8 +1267,71 @@ describe('deleteTimeEntry', () => {
 
       const headers = init.headers as Record<string, string>
       expect(headers.Authorization).toBe(EXPECTED_AUTH)
-      // No body — so no Content-Type claiming there is one.
-      expect(headers['Content-Type']).toBeUndefined()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('sends Content-Type despite having no body — OpenProject 406s without it', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+      const client = new OpenProjectClient({ baseUrl: BASE_URL, apiKey: API_KEY })
+      await client.deleteTimeEntry({ id: 77 })
+
+      // OpenProject documents 406 as "the client did not send a Content-Type
+      // header" and applies it to a bodyless DELETE too, so the header cannot
+      // be conditional on there being a body.
+      const [, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+      const headers = init.headers as Record<string, string>
+      expect(headers['Content-Type']).toBe('application/json')
+      expect(init.body).toBeUndefined()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('leaves every method asking for JSON', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const client = new OpenProjectClient({ baseUrl: BASE_URL, apiKey: API_KEY })
+      const entry = timeEntriesFixture._embedded.elements[0]
+      const write = {
+        workPackageId: 42,
+        activityId: 3,
+        spentOn: '2026-07-25',
+        hours: 1.5
+      }
+
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify(timeEntriesFixture), { status: 200 })
+      )
+      await client.listTimeEntries()
+
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify(entry), { status: 201 })
+      )
+      await client.createTimeEntry(write)
+
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify(entry), { status: 200 })
+      )
+      await client.updateTimeEntry({ id: 77, ...write })
+
+      for (const call of fetchMock.mock.calls) {
+        const [, init] = call as [URL, RequestInit]
+        expect((init.headers as Record<string, string>).Accept).toBe(
+          'application/json'
+        )
+      }
+      // A GET has nothing to describe, so it sends no Content-Type — the 406
+      // rule applies to writes, and the reads work without it today.
+      const [, getInit] = fetchMock.mock.calls[0] as [URL, RequestInit]
+      expect((getInit.headers as Record<string, string>)['Content-Type']).toBe(
+        undefined
+      )
     } finally {
       vi.unstubAllGlobals()
     }
