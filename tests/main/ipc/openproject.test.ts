@@ -509,3 +509,152 @@ describe('happy path — time entry activities', () => {
     expect(err.message).not.toContain('stack trace')
   })
 })
+
+/** Helper: invoke the update-time-entry handler. */
+function updateTimeEntry(input: unknown): Promise<unknown> {
+  return electron.invoke('op:openproject:update-time-entry', input)
+}
+
+/** Helper: invoke the delete-time-entry handler. */
+function deleteTimeEntry(input: unknown): Promise<unknown> {
+  return electron.invoke('op:openproject:delete-time-entry', input)
+}
+
+describe('happy path — update time entry', () => {
+  const validInput = {
+    id: 100,
+    workPackageId: 42,
+    activityId: 3,
+    spentOn: '2026-07-25',
+    hours: 1.5,
+    comment: 'Reviewed the redesign spec'
+  }
+
+  it('PATCHes the entry URL with auth and returns the Zod-validated entry', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    const updated = timeEntriesFixture._embedded.elements[0]
+    fetchMock.mockResolvedValueOnce(jsonOk(updated))
+
+    const result = await updateTimeEntry(validInput)
+    expect(result).toEqual(TimeEntrySchema.parse(updated))
+
+    const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+    expect(url.href).toBe(`${BASE_URL}/api/v3/time_entries/100`)
+    expect(init.method).toBe('PATCH')
+    const headers = init.headers as Record<string, string>
+    expect(headers.Authorization).toBe(EXPECTED_AUTH)
+    expect(headers['Content-Type']).toBe('application/json')
+    expect(JSON.parse(init.body as string).hours).toBe('PT1H30M')
+  })
+
+  it('rejects renderer-supplied invalid input without calling fetch', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+
+    const err = await expectIpcError(() =>
+      updateTimeEntry({ ...validInput, hours: 0 })
+    )
+    expect(err.code).toBe('OPENPROJECT_INVALID_INPUT')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('rejects a renderer-supplied path in place of a numeric entry id', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+
+    // The entry id is the one value that reaches the request *path*. A
+    // renderer that sends a traversal string must be refused by the schema,
+    // never interpolated into the URL.
+    for (const id of ['100/../../users', '100?x=1', '../admin']) {
+      const err = await expectIpcError(() =>
+        updateTimeEntry({ ...validInput, id: id as unknown as number })
+      )
+      expect(err.code).toBe('OPENPROJECT_INVALID_INPUT')
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a 422 as OPENPROJECT_VALIDATION_FAILED with only the server message', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          _type: 'Error',
+          message: 'Activity is not set to one of the allowed values.',
+          _embedded: { payload: { echoed: 'must-not-leak' } }
+        }),
+        { status: 422, headers: { 'content-type': 'application/json' } }
+      )
+    )
+
+    const err = await expectIpcError(() => updateTimeEntry(validInput))
+    expect(err.code).toBe('OPENPROJECT_VALIDATION_FAILED')
+    expect(err.message).toBe('Activity is not set to one of the allowed values.')
+    expect(err.message).not.toContain('must-not-leak')
+  })
+
+  it('surfaces a 404 as OPENPROJECT_NOT_FOUND — the entry is gone', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    fetchMock.mockResolvedValueOnce(new Response('', { status: 404 }))
+
+    const err = await expectIpcError(() => updateTimeEntry(validInput))
+    expect(err.code).toBe('OPENPROJECT_NOT_FOUND')
+  })
+
+  it('rejects with CREDENTIAL_NOT_CONFIGURED when nothing is stored', async () => {
+    const err = await expectIpcError(() => updateTimeEntry(validInput))
+    expect(err.code).toBe('CREDENTIAL_NOT_CONFIGURED')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('happy path — delete time entry', () => {
+  it('DELETEs the entry URL with auth and resolves with nothing', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+
+    // The handler returns nothing — a 204 has no body to hand the renderer.
+    await expect(deleteTimeEntry({ id: 100 })).resolves.toBeUndefined()
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+    expect(url.href).toBe(`${BASE_URL}/api/v3/time_entries/100`)
+    expect(init.method).toBe('DELETE')
+    expect(init.body).toBeUndefined()
+    const headers = init.headers as Record<string, string>
+    expect(headers.Authorization).toBe(EXPECTED_AUTH)
+  })
+
+  it('rejects a non-positive-integer id without calling fetch', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+
+    for (const id of [0, -1, 1.5, '100/../../users', null, undefined]) {
+      const err = await expectIpcError(() => deleteTimeEntry({ id }))
+      expect(err.code).toBe('OPENPROJECT_INVALID_INPUT')
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a 404 as OPENPROJECT_NOT_FOUND', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    fetchMock.mockResolvedValueOnce(new Response('', { status: 404 }))
+
+    const err = await expectIpcError(() => deleteTimeEntry({ id: 100 }))
+    expect(err.code).toBe('OPENPROJECT_NOT_FOUND')
+  })
+
+  it('surfaces a 500 without leaking the response body or the key', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    fetchMock.mockResolvedValueOnce(
+      new Response('internal stack trace with ' + API_KEY, { status: 500 })
+    )
+
+    const err = await expectIpcError(() => deleteTimeEntry({ id: 100 }))
+    expect(err.code).toBe('OPENPROJECT_SERVER_ERROR')
+    expect(err.message).not.toContain('stack trace')
+  })
+
+  it('rejects with CREDENTIAL_NOT_CONFIGURED when nothing is stored', async () => {
+    const err = await expectIpcError(() => deleteTimeEntry({ id: 100 }))
+    expect(err.code).toBe('CREDENTIAL_NOT_CONFIGURED')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})

@@ -1050,3 +1050,278 @@ describe('listTimeEntryActivities', () => {
     }
   })
 })
+
+describe('updateTimeEntry', () => {
+  const BASE_URL = 'https://openproject.example.com'
+  const API_KEY = 'unit-test-api-key'
+  const EXPECTED_AUTH = `Basic ${Buffer.from(`apikey:${API_KEY}`).toString('base64')}`
+
+  const validInput = {
+    id: 77,
+    workPackageId: 42,
+    activityId: 3,
+    spentOn: '2026-07-25',
+    hours: 1.5,
+    comment: 'Reviewed the redesign spec'
+  }
+
+  /** The updated entry OpenProject echoes back. */
+  const updatedEntry = timeEntriesFixture._embedded.elements[0]
+
+  it('PATCHes the entry URL with the right headers and body', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify(updatedEntry), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        })
+      )
+
+      const client = new OpenProjectClient({ baseUrl: BASE_URL, apiKey: API_KEY })
+      const result = await client.updateTimeEntry(validInput)
+
+      expect(result).toEqual(TimeEntrySchema.parse(updatedEntry))
+
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+      expect(url.href).toBe(`${BASE_URL}/api/v3/time_entries/77`)
+      expect(init.method).toBe('PATCH')
+
+      const headers = init.headers as Record<string, string>
+      expect(headers.Authorization).toBe(EXPECTED_AUTH)
+      expect(headers['Content-Type']).toBe('application/json')
+
+      // `id` addresses the entry in the path — it is never a body field.
+      const body = JSON.parse(init.body as string)
+      expect(body).not.toHaveProperty('id')
+      expect(body).toEqual({
+        spentOn: '2026-07-25',
+        hours: 'PT1H30M',
+        comment: { raw: 'Reviewed the redesign spec' },
+        _links: {
+          workPackage: { href: '/api/v3/work_packages/42' },
+          activity: { href: '/api/v3/time_entries/activities/3' }
+        }
+      })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('sends an empty comment to clear one — the update is a full replacement', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const client = new OpenProjectClient({ baseUrl: BASE_URL, apiKey: API_KEY })
+
+      // Omitting the key would leave the stored comment in place, making
+      // "clear this comment" unexpressible — unlike create, which omits it.
+      for (const input of [
+        (({ comment: _c, ...rest }) => rest)(validInput),
+        { ...validInput, comment: '' }
+      ]) {
+        fetchMock.mockResolvedValueOnce(
+          new Response(JSON.stringify(updatedEntry), { status: 200 })
+        )
+        await client.updateTimeEntry(input)
+        const [, init] = fetchMock.mock.calls.at(-1) as [URL, RequestInit]
+        expect(JSON.parse(init.body as string).comment).toEqual({ raw: '' })
+      }
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('converts decimal hours to an ISO 8601 duration', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      for (const [hours, iso] of [
+        [0.25, 'PT15M'],
+        [2, 'PT2H'],
+        [7.75, 'PT7H45M']
+      ] as [number, string][]) {
+        fetchMock.mockResolvedValueOnce(
+          new Response(JSON.stringify(updatedEntry), { status: 200 })
+        )
+        const client = new OpenProjectClient({ baseUrl: BASE_URL, apiKey: API_KEY })
+        await client.updateTimeEntry({ ...validInput, hours })
+        const [, init] = fetchMock.mock.calls.at(-1) as [URL, RequestInit]
+        expect(JSON.parse(init.body as string).hours).toBe(iso)
+      }
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('rejects invalid input before making any request', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const client = new OpenProjectClient({ baseUrl: BASE_URL, apiKey: API_KEY })
+      const badInputs = [
+        { ...validInput, id: 0 },
+        { ...validInput, id: -3 },
+        { ...validInput, id: 1.5 },
+        // A non-numeric id must never reach the request path.
+        { ...validInput, id: '77/../work_packages' as unknown as number },
+        { ...validInput, hours: 0 },
+        { ...validInput, hours: 25 },
+        { ...validInput, workPackageId: -1 },
+        { ...validInput, activityId: 0 },
+        { ...validInput, spentOn: '2026-02-31' }
+      ]
+      for (const input of badInputs) {
+        await expect(client.updateTimeEntry(input)).rejects.toMatchObject({
+          code: 'OPENPROJECT_INVALID_INPUT'
+        })
+      }
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('maps HTTP 422 to a validation error carrying only the server message', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      fetchMock.mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            _type: 'Error',
+            message: 'Activity is not set to one of the allowed values.',
+            _embedded: { payload: { secret: 'must-not-leak' } }
+          }),
+          { status: 422, headers: { 'content-type': 'application/json' } }
+        )
+      )
+
+      const client = new OpenProjectClient({ baseUrl: BASE_URL, apiKey: API_KEY })
+      await expect(client.updateTimeEntry(validInput)).rejects.toMatchObject({
+        code: 'OPENPROJECT_VALIDATION_FAILED',
+        status: 422,
+        message: 'Activity is not set to one of the allowed values.'
+      })
+      await expect(
+        client.updateTimeEntry(validInput).catch((e: Error) => e.message)
+      ).resolves.not.toContain('must-not-leak')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('maps 404 to a not-found error — the entry is gone or not visible', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      fetchMock.mockResolvedValueOnce(new Response('', { status: 404 }))
+      const client = new OpenProjectClient({ baseUrl: BASE_URL, apiKey: API_KEY })
+      await expect(client.updateTimeEntry(validInput)).rejects.toMatchObject({
+        code: 'OPENPROJECT_NOT_FOUND'
+      })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('maps an unexpected 200 response shape to a schema error', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ nope: true }), { status: 200 })
+      )
+      const client = new OpenProjectClient({ baseUrl: BASE_URL, apiKey: API_KEY })
+      await expect(client.updateTimeEntry(validInput)).rejects.toMatchObject({
+        code: 'OPENPROJECT_SCHEMA_FAILED'
+      })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
+describe('deleteTimeEntry', () => {
+  const BASE_URL = 'https://openproject.example.com'
+  const API_KEY = 'unit-test-api-key'
+  const EXPECTED_AUTH = `Basic ${Buffer.from(`apikey:${API_KEY}`).toString('base64')}`
+
+  it('DELETEs the entry URL and resolves on an empty 204', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      // A 204 carries no body at all — `new Response('')` is rejected for it.
+      fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+
+      const client = new OpenProjectClient({ baseUrl: BASE_URL, apiKey: API_KEY })
+      await expect(client.deleteTimeEntry({ id: 77 })).resolves.toBeUndefined()
+
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+      expect(url.href).toBe(`${BASE_URL}/api/v3/time_entries/77`)
+      expect(init.method).toBe('DELETE')
+      expect(init.body).toBeUndefined()
+
+      const headers = init.headers as Record<string, string>
+      expect(headers.Authorization).toBe(EXPECTED_AUTH)
+      // No body — so no Content-Type claiming there is one.
+      expect(headers['Content-Type']).toBeUndefined()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('rejects a non-positive-integer id before making any request', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const client = new OpenProjectClient({ baseUrl: BASE_URL, apiKey: API_KEY })
+      const badIds = [
+        0,
+        -1,
+        1.5,
+        Number.NaN,
+        // Path-traversal and injection shapes must never reach the URL.
+        '77/../../work_packages' as unknown as number,
+        '77?foo=bar' as unknown as number,
+        undefined as unknown as number
+      ]
+      for (const id of badIds) {
+        await expect(client.deleteTimeEntry({ id })).rejects.toMatchObject({
+          code: 'OPENPROJECT_INVALID_INPUT'
+        })
+      }
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('maps 404 and 403 to typed errors', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const client = new OpenProjectClient({ baseUrl: BASE_URL, apiKey: API_KEY })
+
+      fetchMock.mockResolvedValueOnce(new Response('', { status: 404 }))
+      await expect(client.deleteTimeEntry({ id: 77 })).rejects.toMatchObject({
+        code: 'OPENPROJECT_NOT_FOUND'
+      })
+
+      fetchMock.mockResolvedValueOnce(new Response('', { status: 403 }))
+      await expect(client.deleteTimeEntry({ id: 77 })).rejects.toMatchObject({
+        code: 'OPENPROJECT_AUTH_FAILED'
+      })
+
+      fetchMock.mockResolvedValueOnce(new Response('', { status: 503 }))
+      await expect(client.deleteTimeEntry({ id: 77 })).rejects.toMatchObject({
+        code: 'OPENPROJECT_SERVER_ERROR'
+      })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})

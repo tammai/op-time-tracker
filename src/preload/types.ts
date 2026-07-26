@@ -30,6 +30,8 @@ import type {
   TimeEntryActivity,
   TimeEntryActivityCollection,
   CreateTimeEntryInput,
+  UpdateTimeEntryInput,
+  DeleteTimeEntryInput,
   parseHoursToDecimal
 } from '../main/schemas/time-entries'
 import type {
@@ -61,6 +63,8 @@ export type {
   TimeEntryActivity,
   TimeEntryActivityCollection,
   CreateTimeEntryInput,
+  UpdateTimeEntryInput,
+  DeleteTimeEntryInput,
   parseHoursToDecimal,
   Status,
   StatusCollection,
@@ -200,7 +204,7 @@ export interface OpenProjectBridge {
   listStatuses(): Promise<StatusCollection>
 
   /**
-   * Create a time entry. The only **write** method on the bridge.
+   * Create a time entry.
    *
    * `input` carries plain numeric ids — never hrefs or paths. The main
    * process Zod-validates it (`CreateTimeEntryInputSchema`) before building
@@ -211,6 +215,33 @@ export interface OpenProjectBridge {
    * entry (HTTP 422 — e.g. the activity isn't allowed for that project).
    */
   createTimeEntry(input: CreateTimeEntryInput): Promise<TimeEntry>
+
+  /**
+   * Update an existing time entry, returning the entry as OpenProject echoes
+   * it back.
+   *
+   * Same trust model as `createTimeEntry` — plain numeric ids only, validated
+   * in the main process (`UpdateTimeEntryInputSchema`), with every href built
+   * there. The entry `id` is the one value that reaches the request path and
+   * is validated as a positive integer first.
+   *
+   * **Full replacement, not a partial patch**: every field is sent, so an
+   * omitted `comment` clears the stored one. Rejects with `{ code, message }`
+   * as `createTimeEntry` does, plus `OPENPROJECT_NOT_FOUND` when the entry is
+   * gone or not visible to the configured key.
+   */
+  updateTimeEntry(input: UpdateTimeEntryInput): Promise<TimeEntry>
+
+  /**
+   * Delete a time entry. Resolves on success — OpenProject answers 204 with
+   * an empty body, so there is nothing to return. Irreversible; there is no
+   * server-side undo.
+   *
+   * Rejects with `{ code, message }`: `OPENPROJECT_INVALID_INPUT` for a
+   * non-positive-integer id (rejected before any request is made),
+   * `OPENPROJECT_NOT_FOUND` when the entry is already gone or not visible.
+   */
+  deleteTimeEntry(input: DeleteTimeEntryInput): Promise<void>
 
   /**
    * Fetch the activities that may be assigned to a time entry — required

@@ -8,12 +8,15 @@ import {
   TimeEntryActivityCollectionSchema,
   TimeEntryFormSchema,
   CreateTimeEntryInputSchema,
-  extractActivitiesFromForm,
-  parseActivityIdFromHref
+  UpdateTimeEntryInputSchema,
+  DeleteTimeEntryInputSchema,
+  extractActivitiesFromForm
 } from '~~/src/main/schemas/time-entries'
 
 // `parseHoursToDecimal` tests moved to `tests/shared/utils/time.test.ts`
 // after the helper was moved to `src/shared/utils/time.ts` (task 7).
+// `parseActivityIdFromHref` tests likewise moved to
+// `tests/shared/utils/hal.test.ts` alongside `parseWorkPackageIdFromHref`.
 
 /**
  * Minimal structural type for the OpenProject Collection fixture JSON. The
@@ -200,28 +203,67 @@ describe('CreateTimeEntryInputSchema', () => {
   })
 })
 
-describe('parseActivityIdFromHref', () => {
-  it('parses the id from a canonical activity href', () => {
-    expect(parseActivityIdFromHref('/api/v3/time_entries/activities/5')).toBe(5)
+describe('UpdateTimeEntryInputSchema', () => {
+  const valid = {
+    id: 77,
+    workPackageId: 42,
+    activityId: 3,
+    spentOn: '2026-07-25',
+    hours: 1.5,
+    comment: 'Reviewed the redesign spec'
+  }
+
+  it('parses a valid update input', () => {
+    expect(UpdateTimeEntryInputSchema.parse(valid)).toEqual(valid)
   })
-  it('tolerates a trailing slash', () => {
-    expect(parseActivityIdFromHref('/api/v3/time_entries/activities/12/')).toBe(12)
+
+  it('rejects a missing, non-positive, or non-integer id', () => {
+    const { id: _id, ...noId } = valid
+    expect(() => UpdateTimeEntryInputSchema.parse(noId)).toThrow()
+    for (const id of [0, -1, 1.5, Number.NaN]) {
+      expect(() => UpdateTimeEntryInputSchema.parse({ ...valid, id })).toThrow()
+    }
   })
-  it('parses an absolute href', () => {
-    expect(
-      parseActivityIdFromHref(
-        'https://openproject.example.com/api/v3/time_entries/activities/7'
-      )
-    ).toBe(7)
+
+  it('rejects a non-numeric id — nothing else may reach the request path', () => {
+    for (const id of ['77', '77/../work_packages', true, null]) {
+      expect(() => UpdateTimeEntryInputSchema.parse({ ...valid, id })).toThrow()
+    }
   })
-  it('returns null for a non-numeric or negative segment', () => {
-    expect(parseActivityIdFromHref('/api/v3/time_entries/activities/abc')).toBeNull()
-    expect(parseActivityIdFromHref('/api/v3/time_entries/activities/-3')).toBeNull()
-    expect(parseActivityIdFromHref('/api/v3/time_entries/activities/')).toBeNull()
+
+  it('inherits every create-input rule', () => {
+    // Extended from `CreateTimeEntryInputSchema`, so the field rules can't
+    // drift between the two writes.
+    expect(() =>
+      UpdateTimeEntryInputSchema.parse({ ...valid, hours: 25 })
+    ).toThrow()
+    expect(() =>
+      UpdateTimeEntryInputSchema.parse({ ...valid, spentOn: '2026-02-31' })
+    ).toThrow()
+    expect(() =>
+      UpdateTimeEntryInputSchema.parse({ ...valid, workPackageId: 0 })
+    ).toThrow()
+    expect(() =>
+      UpdateTimeEntryInputSchema.parse({ ...valid, comment: 'x'.repeat(2001) })
+    ).toThrow()
   })
-  it('returns null for an unrelated href', () => {
-    expect(parseActivityIdFromHref('/api/v3/statuses/1')).toBeNull()
-    expect(parseActivityIdFromHref('')).toBeNull()
+
+  it('accepts a missing comment — the client reads that as "clear it"', () => {
+    const { comment: _comment, ...noComment } = valid
+    expect(UpdateTimeEntryInputSchema.parse(noComment).comment).toBeUndefined()
+  })
+})
+
+describe('DeleteTimeEntryInputSchema', () => {
+  it('parses a positive integer id', () => {
+    expect(DeleteTimeEntryInputSchema.parse({ id: 77 }).id).toBe(77)
+  })
+
+  it('rejects anything that is not a positive integer id', () => {
+    for (const id of [0, -1, 1.5, Number.NaN, '77', null, undefined]) {
+      expect(() => DeleteTimeEntryInputSchema.parse({ id })).toThrow()
+    }
+    expect(() => DeleteTimeEntryInputSchema.parse({})).toThrow()
   })
 })
 

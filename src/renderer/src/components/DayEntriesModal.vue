@@ -1,24 +1,37 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useQuery } from '@pinia/colada'
+// Imported explicitly rather than relying on the generated `auto-imports.d.ts`
+// globals: those satisfy the type checker but not eslint's `no-undef`, and the
+// generated file is gitignored, so a fresh clone would fail lint.
+import { useToast } from '@nuxt/ui/composables/useToast'
 import type { TimeEntry } from '@opentracker/preload'
 
-import { timeEntryQueries } from '@renderer/composables/queries/time-entries'
-import { parseHoursToDecimal } from '@shared/utils/time'
+import {
+  timeEntryQueries,
+  useDeleteTimeEntry
+} from '@renderer/composables/queries/time-entries'
+import {
+  timeEntryCommentText,
+  timeEntryHours,
+  toTimeEntryDraft,
+  type TimeEntryDraft
+} from '@renderer/utils/time-entry-draft'
 import TimeEntryForm from './TimeEntryForm.vue'
 
 /**
- * The day modal: log time against a day (top section) and review what's
- * already logged on it (footer).
+ * The day modal: log time against a day (top section) and review, edit, or
+ * delete what's already logged on it (footer).
  *
  * The entry list is its own single-day query rather than a slice of the
- * calendar's month query — the mutation invalidates the whole
- * `['time-entries']` prefix, so both refresh together after a save, and a
+ * calendar's month query — every mutation invalidates the whole
+ * `['time-entries']` prefix, so both refresh together after a write, and a
  * dedicated query keeps this modal correct even for a day outside the
  * currently displayed month.
  *
- * Editing and deleting entries are deliberately not here yet; the list is
- * read-only for now.
+ * Editing reuses the same `TimeEntryForm` in the top section rather than
+ * opening a second modal: it's the same fields with the same validation, and
+ * a nested modal would put the entry list out of view while editing it.
  *
  * Conventions: no direct `window.openproject.*` calls — data comes from the
  * query composable (`.opencode/rules/conventions-frontend.md`).
@@ -59,35 +72,133 @@ const dateLabel = computed(() =>
   })
 )
 
-/** Decimal hours for one entry; unparseable durations count as 0. */
-function entryHours(entry: TimeEntry): number {
-  try {
-    return parseHoursToDecimal(entry.hours)
-  } catch {
-    return 0
-  }
-}
-
 const totalHours = computed(() =>
-  entries.value.reduce((sum, e) => sum + entryHours(e), 0)
+  entries.value.reduce((sum, e) => sum + timeEntryHours(e), 0)
 )
 
 const totalLabel = computed(() => `${totalHours.value.toFixed(2)}h logged`)
 
-/**
- * The comment text. OpenProject's `comment` is a Formattable object, but the
- * schema also tolerates a bare string or null — read all three shapes.
- */
-function commentText(entry: TimeEntry): string {
-  const c = entry.comment
-  if (c === null || c === undefined) return ''
-  if (typeof c === 'string') return c
-  return c.raw ?? ''
-}
-
 /** Work package label from the HAL link title, with an id fallback. */
 function workPackageLabel(entry: TimeEntry): string {
   return entry._links.workPackage?.title ?? 'Work package'
+}
+
+const toast = useToast()
+
+// ---------------------------------------------------------------------------
+// Row state — which entry is being edited, and which is confirming a delete.
+// Declared together because each action clears the other: opening an edit
+// dismisses a pending confirm, and deleting the edited entry ends the edit.
+// ---------------------------------------------------------------------------
+
+/**
+ * The entry currently loaded into the form, or `null` in add mode.
+ *
+ * A snapshot taken when the pencil is clicked, not a lookup into the live
+ * list: a background refetch mid-edit would otherwise overwrite whatever the
+ * user has typed. The `id` it carries is what the save is applied to, so a
+ * stale snapshot updates the right entry regardless.
+ */
+const editingDraft = ref<TimeEntryDraft | null>(null)
+
+/** The row showing its inline "Delete this entry?" confirm, if any. */
+const confirmingDeleteId = ref<number | null>(null)
+
+/** The row whose delete is in flight — only ever one at a time. */
+const deletingId = ref<number | null>(null)
+
+// ---------------------------------------------------------------------------
+// Edit
+// ---------------------------------------------------------------------------
+
+/**
+ * Entries whose work package href or duration can't be read back into form
+ * values (see `toTimeEntryDraft`) have no pencil — the form would have to
+ * invent a value and the save would overwrite the entry with it. Deleting
+ * them still works; that needs nothing but the id.
+ */
+const draftsByEntryId = computed(
+  () => new Map(entries.value.map((entry) => [entry.id, toTimeEntryDraft(entry)]))
+)
+
+function startEditing(entry: TimeEntry): void {
+  const draft = draftsByEntryId.value.get(entry.id)
+  if (!draft) return
+  confirmingDeleteId.value = null
+  editingDraft.value = draft
+}
+
+function stopEditing(): void {
+  editingDraft.value = null
+}
+
+/** The edited entry was gone by the time the save landed. */
+function onEditTargetMissing(): void {
+  stopEditing()
+  toast.add({
+    title: 'Entry no longer exists',
+    description: 'It was removed elsewhere. The list has been refreshed.',
+    icon: 'i-lucide-alert-triangle',
+    color: 'warning'
+  })
+  void refresh()
+}
+
+// Reopening the modal — on another day, or the same one — must not resume an
+// edit the user walked away from.
+watch(open, (isOpen) => {
+  if (!isOpen) {
+    stopEditing()
+    confirmingDeleteId.value = null
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Delete
+// ---------------------------------------------------------------------------
+
+const { mutateAsync: deleteTimeEntry } = useDeleteTimeEntry()
+
+function askDelete(entry: TimeEntry): void {
+  confirmingDeleteId.value = entry.id
+}
+
+function cancelDelete(): void {
+  confirmingDeleteId.value = null
+}
+
+/**
+ * Delete is irreversible and there is no server-side undo, hence the inline
+ * confirm above. Failures surface as a toast rather than an inline alert: the
+ * row they belong to is gone from the confirm state by then, and on a 404 the
+ * row itself is about to disappear from the refreshed list.
+ */
+async function confirmDelete(entry: TimeEntry): Promise<void> {
+  deletingId.value = entry.id
+  try {
+    await deleteTimeEntry({ id: entry.id })
+    // Deleting the entry under edit leaves the form editing something that no
+    // longer exists.
+    if (editingDraft.value?.id === entry.id) stopEditing()
+    confirmingDeleteId.value = null
+    toast.add({
+      title: 'Entry deleted',
+      description: `${timeEntryHours(entry).toFixed(2)}h on ${props.date}.`,
+      icon: 'i-lucide-trash-2',
+      color: 'success'
+    })
+  } catch (e) {
+    const err = e as ({ code?: string; message?: string } & Error) | null
+    toast.add({
+      title: 'Couldn’t delete entry',
+      description:
+        err?.message ?? 'An unexpected error occurred while deleting the entry.',
+      icon: 'i-lucide-alert-octagon',
+      color: 'error'
+    })
+  } finally {
+    deletingId.value = null
+  }
 }
 
 /**
@@ -117,7 +228,13 @@ const errorMessage = computed(() => {
     :ui="{ content: 'max-w-2xl' }"
   >
     <template #body>
-      <TimeEntryForm :date="props.date" />
+      <TimeEntryForm
+        :date="props.date"
+        :draft="editingDraft"
+        @cancel-edit="stopEditing"
+        @missing="onEditTargetMissing"
+        @saved="stopEditing"
+      />
     </template>
 
     <template #footer>
@@ -174,29 +291,82 @@ const errorMessage = computed(() => {
           variant="naked"
         />
 
-        <!-- List (read-only for now; edit/delete come later) -->
+        <!-- List. Each row carries edit + delete; delete confirms in place
+             rather than in a nested modal, so the entry stays visible while
+             the user decides. -->
         <ul v-else class="flex max-h-56 flex-col gap-2 overflow-y-auto">
           <li
             v-for="entry in entries"
             :key="entry.id"
-            class="flex items-start justify-between gap-3 rounded-md bg-elevated/50 px-3 py-2"
+            class="flex flex-col gap-2 rounded-md bg-elevated/50 px-3 py-2"
+            :class="{ 'ring-1 ring-primary': editingDraft?.id === entry.id }"
           >
-            <div class="flex min-w-0 flex-col gap-0.5">
-              <span class="truncate text-sm font-medium text-highlighted">
-                {{ workPackageLabel(entry) }}
-              </span>
-              <span
-                v-if="commentText(entry)"
-                class="truncate text-xs text-muted"
-              >
-                {{ commentText(entry) }}
-              </span>
+            <div class="flex items-start justify-between gap-3">
+              <div class="flex min-w-0 flex-col gap-0.5">
+                <span class="truncate text-sm font-medium text-highlighted">
+                  {{ workPackageLabel(entry) }}
+                </span>
+                <span
+                  v-if="timeEntryCommentText(entry)"
+                  class="truncate text-xs text-muted"
+                >
+                  {{ timeEntryCommentText(entry) }}
+                </span>
+              </div>
+
+              <div class="flex shrink-0 items-center gap-1">
+                <span class="text-sm font-semibold text-primary tabular-nums">
+                  {{ timeEntryHours(entry).toFixed(2) }}h
+                </span>
+                <UButton
+                  color="neutral"
+                  variant="ghost"
+                  size="xs"
+                  icon="i-lucide-pencil"
+                  :aria-label="`Edit entry #${entry.id}`"
+                  :disabled="
+                    !draftsByEntryId.get(entry.id) || deletingId === entry.id
+                  "
+                  @click="startEditing(entry)"
+                />
+                <UButton
+                  color="neutral"
+                  variant="ghost"
+                  size="xs"
+                  icon="i-lucide-trash-2"
+                  :aria-label="`Delete entry #${entry.id}`"
+                  :disabled="deletingId === entry.id"
+                  @click="askDelete(entry)"
+                />
+              </div>
             </div>
-            <span
-              class="shrink-0 text-sm font-semibold text-primary tabular-nums"
+
+            <div
+              v-if="confirmingDeleteId === entry.id"
+              class="flex items-center justify-between gap-2 border-t border-default pt-2"
             >
-              {{ entryHours(entry).toFixed(2) }}h
-            </span>
+              <span class="text-xs text-muted">
+                Delete this entry? This can't be undone.
+              </span>
+              <div class="flex items-center gap-1">
+                <UButton
+                  color="neutral"
+                  variant="ghost"
+                  size="xs"
+                  label="Cancel"
+                  :disabled="deletingId === entry.id"
+                  @click="cancelDelete()"
+                />
+                <UButton
+                  color="error"
+                  variant="solid"
+                  size="xs"
+                  label="Delete"
+                  :loading="deletingId === entry.id"
+                  @click="confirmDelete(entry)"
+                />
+              </div>
+            </div>
           </li>
         </ul>
       </div>

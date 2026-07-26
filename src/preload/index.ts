@@ -6,7 +6,9 @@ import type {
   ListWorkPackagesInput,
   ListTimeEntriesInput,
   ListTimeEntryActivitiesInput,
-  CreateTimeEntryInput
+  CreateTimeEntryInput,
+  UpdateTimeEntryInput,
+  DeleteTimeEntryInput
 } from './types'
 
 const bridge: OpenProjectBridge = {
@@ -44,6 +46,10 @@ const bridge: OpenProjectBridge = {
   // request path. See `.opencode/rules/security.md`.
   createTimeEntry: (input: CreateTimeEntryInput) =>
     ipcRenderer.invoke('op:openproject:create-time-entry', input),
+  updateTimeEntry: (input: UpdateTimeEntryInput) =>
+    ipcRenderer.invoke('op:openproject:update-time-entry', input),
+  deleteTimeEntry: (input: DeleteTimeEntryInput) =>
+    ipcRenderer.invoke('op:openproject:delete-time-entry', input),
   listTimeEntryActivities: (input?: ListTimeEntryActivitiesInput) =>
     ipcRenderer.invoke('op:openproject:list-time-entry-activities', input)
 }
@@ -62,6 +68,8 @@ export type {
   ListTimeEntriesInput,
   ListTimeEntryActivitiesInput,
   CreateTimeEntryInput,
+  UpdateTimeEntryInput,
+  DeleteTimeEntryInput,
   WorkPackage,
   WorkPackageCollection,
   WorkPackageLinks,

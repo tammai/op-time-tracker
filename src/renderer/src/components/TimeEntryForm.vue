@@ -13,16 +13,26 @@ import {
   WORK_PACKAGE_SEARCH_MIN_DIGITS
 } from '@shared/validation/work-package-search'
 import { timeEntryActivityQueries } from '@renderer/composables/queries/time-entry-activities'
-import { useCreateTimeEntry } from '@renderer/composables/queries/time-entries'
+import {
+  useCreateTimeEntry,
+  useUpdateTimeEntry
+} from '@renderer/composables/queries/time-entries'
+import type { TimeEntryDraft } from '@renderer/utils/time-entry-draft'
 
 /**
- * Add-a-time-entry form. Rendered in the day modal's top section.
+ * The time-entry form, rendered in the day modal's top section. One component
+ * serves both modes: with `draft` unset it logs a new entry, with `draft` set
+ * it edits that entry in place.
+ *
+ * Both modes share every field, every validation rule, and the activity
+ * scoping — so they share a component. Splitting them would mean maintaining
+ * two copies of the work-package/activity wiring that would drift.
  *
  * Conventions (`.opencode/rules/conventions-frontend.md`):
  * - No direct `window.openproject.*` calls — the work-package list, the
- *   activity list, and the write all go through query/mutation composables,
+ *   activity list, and both writes go through query/mutation composables,
  *   so the Colada cache and its invalidation stay wired.
- * - Cache invalidation lives in `useCreateTimeEntry()`, not here: after a
+ * - Cache invalidation lives in the mutation composables, not here: after a
  *   successful save the calendar grid, the month total, and this modal's
  *   entry list all refetch without this component knowing about them.
  *
@@ -38,18 +48,29 @@ import { useCreateTimeEntry } from '@renderer/composables/queries/time-entries'
 const props = defineProps<{
   /** The day being logged against, `YYYY-MM-DD`. */
   date: string
+  /**
+   * The entry being edited. Unset (or `null`) means add mode. Changing it
+   * reloads the fields — the parent owns which entry, if any, is under edit.
+   */
+  draft?: TimeEntryDraft | null
 }>()
 
 const emit = defineEmits<{
-  /** A time entry was created successfully. */
+  /** A time entry was created or updated successfully. */
   saved: []
+  /** The user backed out of edit mode. */
+  cancelEdit: []
+  /** An edit failed because the entry no longer exists on the server. */
+  missing: []
 }>()
+
+const isEditing = computed(() => props.draft != null)
 
 /** Default entry length — the most common single log. */
 const DEFAULT_HOURS = 1
 
 /**
- * Longest single entry the form accepts — a working day. The stepper's `max`
+ * Longest *new* entry the form accepts — a working day. The stepper's `max`
  * and the schema below share it, so the input can't offer a value the
  * validation would then reject. The main process stays authoritative with its
  * own (looser, 24h) cap in `CreateTimeEntryInputSchema`.
@@ -57,28 +78,47 @@ const DEFAULT_HOURS = 1
 const MAX_HOURS = 8
 
 /**
- * Client-side schema for immediate field feedback. The main process
- * re-validates with `CreateTimeEntryInputSchema` and remains authoritative —
- * this one exists so the user sees an inline message instead of a round-trip
- * rejection. Zod 4 takes a single `error` for the type-mismatch message.
+ * The cap when editing: the main process's own limit, not the working-day one.
+ * An entry longer than 8h can exist (logged in OpenProject's web UI, or before
+ * this cap), and the stricter limit would make its comment uneditable without
+ * also rewriting its hours — a dead end the user can't resolve from here.
  */
-const formSchema = z.object({
-  workPackageId: z
-    .number({ error: 'Choose a work package.' })
-    .int()
-    .positive('Choose a work package.'),
-  activityId: z
-    .number({ error: 'Choose an activity.' })
-    .int()
-    .positive('Choose an activity.'),
-  hours: z
-    .number({ error: 'Enter the hours worked.' })
-    .positive('Hours must be greater than 0.')
-    .max(MAX_HOURS, `A single entry cannot exceed ${MAX_HOURS} hours.`),
-  comment: z.string().max(2000, 'Comment is too long.').optional()
-})
+const MAX_HOURS_EDIT = 24
 
-type FormState = z.infer<typeof formSchema>
+const maxHours = computed(() => (isEditing.value ? MAX_HOURS_EDIT : MAX_HOURS))
+
+/**
+ * Client-side schema for immediate field feedback. The main process
+ * re-validates with `Create`/`UpdateTimeEntryInputSchema` and remains
+ * authoritative — this one exists so the user sees an inline message instead
+ * of a round-trip rejection. Zod 4 takes a single `error` for the
+ * type-mismatch message.
+ *
+ * Built by a function rather than declared inline, so the hours cap can vary
+ * with the mode (see `maxHours`) while the inferred `FormState` stays one
+ * fixed type.
+ */
+function buildFormSchema(hoursMax: number) {
+  return z.object({
+    workPackageId: z
+      .number({ error: 'Choose a work package.' })
+      .int()
+      .positive('Choose a work package.'),
+    activityId: z
+      .number({ error: 'Choose an activity.' })
+      .int()
+      .positive('Choose an activity.'),
+    hours: z
+      .number({ error: 'Enter the hours worked.' })
+      .positive('Hours must be greater than 0.')
+      .max(hoursMax, `A single entry cannot exceed ${hoursMax} hours.`),
+    comment: z.string().max(2000, 'Comment is too long.').optional()
+  })
+}
+
+const formSchema = computed(() => buildFormSchema(maxHours.value))
+
+type FormState = z.infer<ReturnType<typeof buildFormSchema>>
 
 const state = ref<{
   workPackageId: number | undefined
@@ -91,6 +131,37 @@ const state = ref<{
   hours: DEFAULT_HOURS,
   comment: ''
 })
+
+/**
+ * The last failed save. Bridge errors cross IPC as `{ code, message }` — read
+ * defensively via `toBridgeError` and never reach into secret-bearing detail.
+ */
+const saveError = ref<{ code: string; message: string } | null>(null)
+
+/**
+ * Load the entry under edit into the fields, and reset them when edit mode
+ * ends. Add mode keeps the previously chosen work package + activity so
+ * logging a second entry against the same item is quick — but leaving edit
+ * mode must not leave the edited entry's hours and comment sitting in what is
+ * now a "new entry" form, so those two are cleared.
+ */
+watch(
+  () => props.draft,
+  (draft) => {
+    saveError.value = null
+    if (draft) {
+      state.value = {
+        workPackageId: draft.workPackageId,
+        activityId: draft.activityId,
+        hours: draft.hours,
+        comment: draft.comment
+      }
+      return
+    }
+    state.value.hours = DEFAULT_HOURS
+    state.value.comment = ''
+  }
+)
 
 // ---------------------------------------------------------------------------
 // Work packages — the select's options.
@@ -171,10 +242,10 @@ const hasNoActivities = computed(
 // Save
 // ---------------------------------------------------------------------------
 
-const { mutateAsync: createTimeEntry, isLoading: saving } = useCreateTimeEntry()
+const { mutateAsync: createTimeEntry, isLoading: creating } = useCreateTimeEntry()
+const { mutateAsync: updateTimeEntry, isLoading: updating } = useUpdateTimeEntry()
 
-/** Bridge errors cross IPC as `{ code, message }`; read defensively. */
-const saveError = ref<{ code: string; message: string } | null>(null)
+const saving = computed(() => creating.value || updating.value)
 
 function toBridgeError(e: unknown): { code: string; message: string } {
   const err = e as ({ code?: string; message?: string } & Error) | null
@@ -189,29 +260,57 @@ const toast = useToast()
 
 async function onSubmit(event: { data: FormState }): Promise<void> {
   saveError.value = null
+
+  // An empty comment is sent as an absent one. On create that means "no
+  // comment"; on update the main process reads it as "clear the stored
+  // comment" (the update is a full replacement) — which is exactly what
+  // emptying the field should do.
+  const comment = event.data.comment?.trim()
+  const fields = {
+    workPackageId: event.data.workPackageId,
+    activityId: event.data.activityId,
+    spentOn: props.date,
+    hours: event.data.hours,
+    ...(comment !== undefined && comment !== '' ? { comment } : {})
+  }
+
+  const editingId = props.draft?.id
+
   try {
-    await createTimeEntry({
-      workPackageId: event.data.workPackageId,
-      activityId: event.data.activityId,
-      spentOn: props.date,
-      hours: event.data.hours,
-      ...(event.data.comment !== undefined && event.data.comment.trim() !== ''
-        ? { comment: event.data.comment.trim() }
-        : {})
-    })
-    toast.add({
-      title: 'Time logged',
-      description: `${event.data.hours}h on ${props.date}.`,
-      icon: 'i-lucide-check-circle',
-      color: 'success'
-    })
-    // Keep the work package + activity so logging a second entry against the
-    // same item is quick; reset only what's entry-specific.
-    state.value.hours = DEFAULT_HOURS
-    state.value.comment = ''
+    if (editingId !== undefined) {
+      await updateTimeEntry({ id: editingId, ...fields })
+      toast.add({
+        title: 'Entry updated',
+        description: `${event.data.hours}h on ${props.date}.`,
+        icon: 'i-lucide-check-circle',
+        color: 'success'
+      })
+    } else {
+      await createTimeEntry(fields)
+      toast.add({
+        title: 'Time logged',
+        description: `${event.data.hours}h on ${props.date}.`,
+        icon: 'i-lucide-check-circle',
+        color: 'success'
+      })
+      // Keep the work package + activity so logging a second entry against
+      // the same item is quick; reset only what's entry-specific. In edit
+      // mode the parent clears `draft` instead, which resets these via the
+      // watch above.
+      state.value.hours = DEFAULT_HOURS
+      state.value.comment = ''
+    }
     emit('saved')
   } catch (e) {
-    saveError.value = toBridgeError(e)
+    const error = toBridgeError(e)
+    // The entry vanished under the form — editing it is no longer meaningful,
+    // so hand the situation to the parent (which drops edit mode and refreshes
+    // the list) rather than showing an alert against a form that can't succeed.
+    if (editingId !== undefined && error.code === 'OPENPROJECT_NOT_FOUND') {
+      emit('missing')
+      return
+    }
+    saveError.value = error
   }
 }
 </script>
@@ -223,6 +322,28 @@ async function onSubmit(event: { data: FormState }): Promise<void> {
     class="flex flex-col gap-4"
     @submit="onSubmit"
   >
+    <!-- Edit mode is a different action on the same fields, so say so up
+         front — otherwise "Save changes" is the only thing distinguishing it
+         from the add form. -->
+    <div
+      v-if="isEditing"
+      class="flex items-center justify-between gap-2 rounded-md bg-elevated/50 px-3 py-2"
+    >
+      <span class="flex items-center gap-1.5 text-sm text-highlighted">
+        <UIcon name="i-lucide-pencil" class="size-4 shrink-0 text-primary" />
+        <span>Editing entry #{{ props.draft?.id }}</span>
+      </span>
+      <UButton
+        color="neutral"
+        variant="ghost"
+        size="xs"
+        icon="i-lucide-x"
+        label="Cancel"
+        :disabled="saving"
+        @click="emit('cancelEdit')"
+      />
+    </div>
+
     <UFormField name="workPackageId">
       <USelectMenu
         v-model="state.workPackageId"
@@ -283,7 +404,7 @@ async function onSubmit(event: { data: FormState }): Promise<void> {
         <UInputNumber
           v-model="state.hours"
           :min="0.25"
-          :max="MAX_HOURS"
+          :max="maxHours"
           :step="0.25"
           :disabled="saving"
           aria-label="Hours"
@@ -332,7 +453,7 @@ async function onSubmit(event: { data: FormState }): Promise<void> {
       color="error"
       variant="subtle"
       icon="i-lucide-alert-octagon"
-      title="Couldn't log time"
+      :title="isEditing ? 'Couldn’t save changes' : 'Couldn’t log time'"
       :description="saveError.message"
     />
 
@@ -351,8 +472,8 @@ async function onSubmit(event: { data: FormState }): Promise<void> {
       <UButton
         type="submit"
         color="primary"
-        icon="i-lucide-plus"
-        label="Log time"
+        :icon="isEditing ? 'i-lucide-save' : 'i-lucide-plus'"
+        :label="isEditing ? 'Save changes' : 'Log time'"
         :loading="saving"
         :disabled="saving || hasNoActivities"
       />

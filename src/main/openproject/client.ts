@@ -14,12 +14,18 @@ import {
   TimeEntryActivityCollectionSchema,
   TimeEntryFormSchema,
   CreateTimeEntryInputSchema,
+  UpdateTimeEntryInputSchema,
+  DeleteTimeEntryInputSchema,
   extractActivitiesFromForm,
   TIME_ENTRY_ACTIVITY_PATH,
+  TIME_ENTRY_PATH,
+  WORK_PACKAGE_PATH,
   type TimeEntryCollection,
   type TimeEntry,
   type TimeEntryActivityCollection,
-  type CreateTimeEntryInput
+  type CreateTimeEntryInput,
+  type UpdateTimeEntryInput,
+  type DeleteTimeEntryInput
 } from '../schemas/time-entries'
 import {
   StatusCollectionSchema,
@@ -481,6 +487,46 @@ function logSchemaIssues(e: unknown): void {
 }
 
 // ---------------------------------------------------------------------------
+// Write payloads
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the request body shared by create (`POST`) and update (`PATCH`).
+ *
+ * Both endpoints take the same representation, so the two paths build it in
+ * one place — a field added to one can't silently miss the other. The `_links`
+ * hrefs are built from the already-validated **numeric** ids, so nothing
+ * renderer-supplied reaches a path (`.opencode/rules/security.md`).
+ *
+ * `clearAbsentComment` is the one real difference. `POST` omits an absent
+ * comment (nothing to clear); `PATCH` sends an empty `raw`, because the update
+ * is a full replacement and omitting the key would leave the old comment in
+ * place — making "clear this comment" unexpressible.
+ */
+function buildTimeEntryPayload(
+  fields: CreateTimeEntryInput,
+  options: { clearAbsentComment: boolean }
+): Record<string, unknown> {
+  const { workPackageId, activityId, spentOn, hours, comment } = fields
+  const hasComment = comment !== undefined && comment.length > 0
+
+  return {
+    spentOn,
+    hours: formatDecimalHoursToIso(hours),
+    // OpenProject's `comment` is a Formattable; send the raw text form.
+    ...(hasComment
+      ? { comment: { raw: comment } }
+      : options.clearAbsentComment
+        ? { comment: { raw: '' } }
+        : {}),
+    _links: {
+      workPackage: { href: `${WORK_PACKAGE_PATH}/${workPackageId}` },
+      activity: { href: `${TIME_ENTRY_ACTIVITY_PATH}/${activityId}` }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
 
@@ -678,24 +724,73 @@ export class OpenProjectClient {
         parsed.error
       )
     }
-    const { workPackageId, activityId, spentOn, hours, comment } = parsed.data
 
-    const payload = {
-      spentOn,
-      hours: formatDecimalHoursToIso(hours),
-      // OpenProject's `comment` is a Formattable; send the raw text form.
-      ...(comment !== undefined && comment.length > 0
-        ? { comment: { raw: comment } }
-        : {}),
-      _links: {
-        workPackage: { href: `/api/v3/work_packages/${workPackageId}` },
-        activity: { href: `${TIME_ENTRY_ACTIVITY_PATH}/${activityId}` }
-      }
-    }
+    // On create an absent comment is simply not sent — there is nothing to
+    // clear, and OpenProject defaults it to empty.
+    const payload = buildTimeEntryPayload(parsed.data, {
+      clearAbsentComment: false
+    })
 
-    const url = buildRequestUrl(this.creds.baseUrl, '/api/v3/time_entries')
+    const url = buildRequestUrl(this.creds.baseUrl, TIME_ENTRY_PATH)
     const body = await this.request(url, { method: 'POST', body: payload })
     return this.parseWithSchema(body, TimeEntrySchema)
+  }
+
+  /**
+   * `PATCH /api/v3/time_entries/{id}` — replace an existing entry's fields,
+   * returning the Zod-validated entry OpenProject echoes back.
+   *
+   * Same trust model as `createTimeEntry`: `input` comes from the renderer, so
+   * it is validated here rather than at the caller, and every href in the body
+   * is built from the validated **numeric** ids. `id` is the one value that
+   * reaches the request *path*, and it is a validated positive integer by the
+   * time it gets there — no renderer-supplied string is ever interpolated.
+   *
+   * Full replacement, not a partial patch: the edit form holds every field, so
+   * every field is sent, and an absent `comment` clears the stored one. See
+   * `UpdateTimeEntryInputSchema`.
+   */
+  async updateTimeEntry(input: UpdateTimeEntryInput): Promise<TimeEntry> {
+    const parsed = UpdateTimeEntryInputSchema.safeParse(input)
+    if (!parsed.success) {
+      throw new OpenProjectInvalidInputError(
+        parsed.error.issues[0]?.message ?? 'The time entry details are invalid.',
+        parsed.error
+      )
+    }
+    const { id, ...fields } = parsed.data
+
+    const payload = buildTimeEntryPayload(fields, { clearAbsentComment: true })
+
+    const url = buildRequestUrl(this.creds.baseUrl, `${TIME_ENTRY_PATH}/${id}`)
+    const body = await this.request(url, { method: 'PATCH', body: payload })
+    return this.parseWithSchema(body, TimeEntrySchema)
+  }
+
+  /**
+   * `DELETE /api/v3/time_entries/{id}` — remove an entry. Resolves on
+   * success; OpenProject answers 204 with an empty body, so there is nothing
+   * to parse and nothing to return.
+   *
+   * The id is validated as a positive integer before it reaches the request
+   * path. A 404 (already deleted, or never visible to this user) surfaces as
+   * `OpenProjectNotFoundError` rather than being swallowed — the caller shows
+   * it, because "it was already gone" and "your key can't see it" are
+   * different problems for the user.
+   */
+  async deleteTimeEntry(input: DeleteTimeEntryInput): Promise<void> {
+    const parsed = DeleteTimeEntryInputSchema.safeParse(input)
+    if (!parsed.success) {
+      throw new OpenProjectInvalidInputError(
+        parsed.error.issues[0]?.message ?? 'The time entry id is invalid.',
+        parsed.error
+      )
+    }
+    const url = buildRequestUrl(
+      this.creds.baseUrl,
+      `${TIME_ENTRY_PATH}/${parsed.data.id}`
+    )
+    await this.request(url, { method: 'DELETE' })
   }
 
   /**
@@ -767,7 +862,8 @@ export class OpenProjectClient {
    *
    * Defaults to `GET`; pass `{ method, body }` to write. `body` is
    * JSON-encoded here (never string-concatenated), and the
-   * `Content-Type` header is only sent when there is a body.
+   * `Content-Type` header is only sent when there is a body — so a
+   * bodyless `DELETE` doesn't claim to send JSON.
    *
    * The API key is never logged. The `Authorization` header is built
    * inline and lives only in this fetch. Error messages reference the
@@ -778,7 +874,7 @@ export class OpenProjectClient {
    */
   private async request(
     url: URL,
-    init: { method?: 'GET' | 'POST'; body?: unknown } = {}
+    init: { method?: 'GET' | 'POST' | 'PATCH' | 'DELETE'; body?: unknown } = {}
   ): Promise<unknown> {
     const method = init.method ?? 'GET'
     const hasBody = init.body !== undefined
@@ -908,6 +1004,13 @@ export {
   TimeEntryCollectionSchema,
   TimeEntryActivityCollectionSchema,
   CreateTimeEntryInputSchema,
+  UpdateTimeEntryInputSchema,
+  DeleteTimeEntryInputSchema,
   StatusCollectionSchema
 }
-export type { CreateTimeEntryInput, TimeEntryActivityCollection }
+export type {
+  CreateTimeEntryInput,
+  UpdateTimeEntryInput,
+  DeleteTimeEntryInput,
+  TimeEntryActivityCollection
+}

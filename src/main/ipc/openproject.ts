@@ -6,7 +6,9 @@ import {
   OpenProjectError,
   type WorkPackageFilters,
   type TimeEntryFilters,
-  type CreateTimeEntryInput
+  type CreateTimeEntryInput,
+  type UpdateTimeEntryInput,
+  type DeleteTimeEntryInput
 } from '../openproject/client'
 import {
   CredentialReadError,
@@ -15,7 +17,8 @@ import {
 import { IpcError } from './error'
 
 /**
- * Register the OpenProject IPC handlers (the read-only v1 surface).
+ * Register the OpenProject IPC handlers — the read surface plus the time
+ * entry create/update/delete writes.
  *
  * Channel naming follows `.opencode/rules/conventions-server.md`:
  * `op:` prefix + kebab-case domain. The renderer calls these via the typed
@@ -70,11 +73,12 @@ export function registerOpenProjectIpcHandlers(): void {
   )
 
   /**
-   * The single write channel. `input` arrives from the renderer, so it is
-   * **not** trusted here — `client.createTimeEntry` Zod-validates it before
-   * building any request and rejects with `OPENPROJECT_INVALID_INPUT`
-   * otherwise. The client also builds every `_links` href from the
-   * validated numeric ids, so no renderer string reaches a request path.
+   * The write channels. `input` arrives from the renderer, so it is **not**
+   * trusted here — each client method Zod-validates it before building any
+   * request and rejects with `OPENPROJECT_INVALID_INPUT` otherwise. The
+   * client also builds every `_links` href from the validated numeric ids,
+   * and the update/delete entry id is a validated positive integer before it
+   * reaches the request path, so no renderer string reaches a request URL.
    */
   ipcMain.handle(
     'op:openproject:create-time-entry',
@@ -83,6 +87,32 @@ export function registerOpenProjectIpcHandlers(): void {
         const creds = await requireCredentials()
         const client = new OpenProjectClient(creds)
         return await client.createTimeEntry(input)
+      } catch (e) {
+        throw toIpcError(e)
+      }
+    }
+  )
+
+  ipcMain.handle(
+    'op:openproject:update-time-entry',
+    async (_event, input: UpdateTimeEntryInput) => {
+      try {
+        const creds = await requireCredentials()
+        const client = new OpenProjectClient(creds)
+        return await client.updateTimeEntry(input)
+      } catch (e) {
+        throw toIpcError(e)
+      }
+    }
+  )
+
+  ipcMain.handle(
+    'op:openproject:delete-time-entry',
+    async (_event, input: DeleteTimeEntryInput) => {
+      try {
+        const creds = await requireCredentials()
+        const client = new OpenProjectClient(creds)
+        await client.deleteTimeEntry(input)
       } catch (e) {
         throw toIpcError(e)
       }

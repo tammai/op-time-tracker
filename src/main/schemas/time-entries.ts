@@ -1,6 +1,13 @@
 import { z } from 'zod'
 
 import { parseHoursToDecimal } from '@shared/utils/time'
+import {
+  TIME_ENTRY_ACTIVITY_PATH,
+  TIME_ENTRY_PATH,
+  WORK_PACKAGE_PATH,
+  parseActivityIdFromHref,
+  parseWorkPackageIdFromHref
+} from '@shared/utils/hal'
 
 /**
  * Zod schemas for the OpenProject REST API v3 Time Entry responses.
@@ -20,9 +27,18 @@ import { parseHoursToDecimal } from '@shared/utils/time'
  */
 
 // Re-export so existing imports (`src/preload/types.ts`, tests) keep working
-// after the move to `@shared/utils/time`. The shared module is the single
-// source of truth for the implementation.
-export { parseHoursToDecimal }
+// after the move to `@shared/utils/time` and `@shared/utils/hal`. Those
+// shared modules are the single source of truth for the implementations —
+// the renderer imports them directly (it must not reach into `src/main/`),
+// while main-process code keeps importing them from this schema module.
+export {
+  parseHoursToDecimal,
+  TIME_ENTRY_ACTIVITY_PATH,
+  TIME_ENTRY_PATH,
+  WORK_PACKAGE_PATH,
+  parseActivityIdFromHref,
+  parseWorkPackageIdFromHref
+}
 
 /**
  * A HAL link: an `href`, usually a `title`.
@@ -40,14 +56,20 @@ const HalLinkSchema = z.object({
 /**
  * The `_links` object on a Time Entry. `self` is always present; the others
  * may be absent depending on the entry. `.passthrough()` lets OpenProject
- * add other links (e.g. `activity`, `costObject`) without failing the parse.
+ * add other links (e.g. `costObject`) without failing the parse.
+ *
+ * `activity` is declared rather than left to the passthrough because the day
+ * modal reads it to prefill edit mode — a passthrough key types as `unknown`,
+ * so reading it would mean casting. Declared and optional, it stays additive:
+ * an entry without the link still parses.
  */
 const TimeEntryLinksSchema = z
   .object({
     self: HalLinkSchema,
     workPackage: HalLinkSchema.optional(),
     project: HalLinkSchema.optional(),
-    user: HalLinkSchema.optional()
+    user: HalLinkSchema.optional(),
+    activity: HalLinkSchema.optional()
   })
   .passthrough()
 
@@ -105,13 +127,6 @@ export type TimeEntryLinks = z.infer<typeof TimeEntryLinksSchema>
 // ---------------------------------------------------------------------------
 // Time entry activities (required on every created time entry)
 // ---------------------------------------------------------------------------
-
-/**
- * API path of the `TimeEntriesActivity` resource collection. Both the
- * href → id parser below and the client's href builder derive from this
- * one constant so they can never drift apart.
- */
-export const TIME_ENTRY_ACTIVITY_PATH = '/api/v3/time_entries/activities'
 
 /**
  * A single `TimeEntriesActivity` — the "what kind of work" enumeration
@@ -187,21 +202,6 @@ export const TimeEntryFormSchema = z
       .optional()
   })
   .passthrough()
-
-/**
- * Parse a `TimeEntriesActivity` id out of its self href.
- *
- * The href is server-supplied, so the trailing segment is validated as a
- * positive integer rather than trusted — a non-numeric or negative
- * segment yields `null` and the entry is skipped.
- */
-export function parseActivityIdFromHref(href: string): number | null {
-  if (typeof href !== 'string') return null
-  const match = new RegExp(`${TIME_ENTRY_ACTIVITY_PATH}/(\\d+)/?$`).exec(href)
-  if (!match) return null
-  const id = Number(match[1])
-  return Number.isInteger(id) && id > 0 ? id : null
-}
 
 /**
  * Extract the allowed activities from a `time_entries/form` response.
@@ -306,3 +306,36 @@ export const CreateTimeEntryInputSchema = z.object({
 })
 
 export type CreateTimeEntryInput = z.infer<typeof CreateTimeEntryInputSchema>
+
+// ---------------------------------------------------------------------------
+// Update / delete input (renderer → main; same untrusted source)
+// ---------------------------------------------------------------------------
+
+/**
+ * Input for updating an existing time entry: the create fields plus the id of
+ * the entry to replace.
+ *
+ * Semantics are **full replacement**, not a partial patch — the renderer's
+ * edit form always holds every field, so the client sends every field. That
+ * makes an omitted `comment` mean "clear it", which is the only way to express
+ * clearing when the field is optional. A partial-patch reading would make
+ * clearing impossible.
+ *
+ * `id` is the only value that reaches a request *path*, so it is validated as
+ * a positive integer here, before any URL is built
+ * (`.opencode/rules/security.md` — validate at boundaries).
+ */
+export const UpdateTimeEntryInputSchema = CreateTimeEntryInputSchema.extend({
+  id: z.number().int().positive()
+})
+
+/**
+ * Input for deleting a time entry. Nothing but the id — and it is validated
+ * as a positive integer before it is interpolated into the request path.
+ */
+export const DeleteTimeEntryInputSchema = z.object({
+  id: z.number().int().positive()
+})
+
+export type UpdateTimeEntryInput = z.infer<typeof UpdateTimeEntryInputSchema>
+export type DeleteTimeEntryInput = z.infer<typeof DeleteTimeEntryInputSchema>

@@ -8,6 +8,8 @@ import {
 import { computed, ref } from 'vue'
 import type {
   CreateTimeEntryInput,
+  UpdateTimeEntryInput,
+  DeleteTimeEntryInput,
   TimeEntry,
   TimeEntryCollection,
   TimeEntryFilters
@@ -195,4 +197,52 @@ export function useCreateTimeEntry() {
   })
 }
 
-export type { CreateTimeEntryInput, TimeEntry, TimeEntryCollection, TimeEntryFilters }
+/**
+ * Update an existing time entry.
+ *
+ * Invalidates on the same `['time-entries']` prefix as the create mutation,
+ * and for the same reason: an edit can change the hours, so the day list, the
+ * calendar cell, and the month total are all potentially stale — and an edit
+ * that moved nothing still needs the list to show the new comment.
+ *
+ * The update is a **full replacement** (see the preload contract): the caller
+ * must send every field, not just the changed ones, so an omitted comment
+ * clears it rather than leaving the old text in place.
+ */
+export function useUpdateTimeEntry() {
+  const cache = useQueryCache()
+  return useMutation<TimeEntry, UpdateTimeEntryInput>({
+    mutation: (input: UpdateTimeEntryInput) =>
+      window.openproject.updateTimeEntry(input),
+    onSuccess: () => {
+      cache.invalidateQueries({ key: ['time-entries'] })
+    }
+  })
+}
+
+/**
+ * Delete a time entry.
+ *
+ * Same prefix invalidation. No optimistic removal: the row disappearing before
+ * the server confirms would have to be put back on failure, and a delete that
+ * silently un-deletes itself is worse than a brief spinner on the row.
+ */
+export function useDeleteTimeEntry() {
+  const cache = useQueryCache()
+  return useMutation<void, DeleteTimeEntryInput>({
+    mutation: (input: DeleteTimeEntryInput) =>
+      window.openproject.deleteTimeEntry(input),
+    onSuccess: () => {
+      cache.invalidateQueries({ key: ['time-entries'] })
+    }
+  })
+}
+
+export type {
+  CreateTimeEntryInput,
+  UpdateTimeEntryInput,
+  DeleteTimeEntryInput,
+  TimeEntry,
+  TimeEntryCollection,
+  TimeEntryFilters
+}
