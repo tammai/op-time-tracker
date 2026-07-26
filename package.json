@@ -1,6 +1,6 @@
 {
   "name": "op-time-tracker",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "private": true,
   "description": "OpenProject Time Tracker — Electron desktop app",
   "type": "module",
@@ -22,6 +22,9 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
+    "dist": "electron-vite build && electron-builder --mac",
+    "dist:dir": "electron-vite build && electron-builder --mac --dir",
+    "icons": "node tools/make-icons.mjs",
     "type-check": "vue-tsc --noEmit -p tsconfig.node.json && vue-tsc --noEmit -p tsconfig.web.json && vue-tsc --noEmit -p tsconfig.test.json",
     "type-check:tests": "vue-tsc --noEmit -p tsconfig.test.json",
     "lint": "eslint .",
@@ -29,16 +32,23 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@iconify-json/lucide": "^1.2.118",
+    "@internationalized/date": "^3.12.2",
+    "@nuxt/ui": "^4.10.0",
+    "@pinia/colada": "^1.4.2",
     "@types/node": "^26.1.1",
     "@typescript-eslint/eslint-plugin": "^8.18.0",
     "@typescript-eslint/parser": "^8.18.0",
     "@vitejs/plugin-vue": "^5.2.1",
     "@vue/tsconfig": "^0.7.0",
     "electron": "^33.2.1",
+    "electron-builder": "^26.15.3",
     "electron-vite": "^2.3.0",
     "eslint": "^9.15.0",
     "eslint-plugin-vue": "^9.32.0",
     "globals": "^17.7.0",
+    "pinia": "^4.0.2",
+    "tailwindcss": "^4.3.3",
     "typescript": "^5.7.2",
     "vite": "^5.4.11",
     "vitest": "^2.1.8",
@@ -47,13 +57,7 @@
     "vue-tsc": "^2.1.10"
   },
   "dependencies": {
-    "@iconify-json/lucide": "^1.2.118",
-    "@internationalized/date": "^3.12.2",
-    "@nuxt/ui": "^4.10.0",
-    "@pinia/colada": "^1.4.2",
     "electron-store": "^11.0.2",
-    "pinia": "^4.0.2",
-    "tailwindcss": "^4.3.3",
     "zod": "^4.4.3"
   }
 }

@@ -1,0 +1,55 @@
+# electron-builder — packaging for distribution.
+#
+# macOS only, universal (arm64 + Intel in one bundle), unsigned. See
+# `knowledge/playbooks/packaging-distribution.md` for the trade-offs and what to
+# change when a Developer ID becomes available.
+#
+# Run via `pnpm dist` (which builds first — electron-builder packages `out/`,
+# it does not compile it).
+
+appId: vn.bigin.op-time-tracker
+productName: OP Time Tracker
+copyright: © 2026 Tam Mai
+
+directories:
+  # Where the icon lives. Not the renderer's build output — that's `out/`.
+  buildResources: build
+  output: release
+
+# An allowlist, not the default "everything but…": the repo root holds the AI
+# harness (`.claude/`, `.opencode/`, `knowledge/`, `tools/`), specs, and tests,
+# none of which belong in something handed to a colleague. `out/**` is the built
+# main/preload/renderer; `package.json` is what Electron reads for `main` and
+# `version`. Production dependencies (`electron-store`, `zod`) are collected by
+# electron-builder itself and need no pattern here.
+files:
+  - out/**
+  - package.json
+  - '!**/*.map'
+
+# The renderer is bundled, so nothing needs unpacking for runtime access.
+asar: true
+
+mac:
+  target:
+    - target: dmg
+      arch: universal
+    - target: zip
+      arch: universal
+  category: public.app-category.productivity
+  icon: build/icon.icns
+  darkModeSupport: true
+  # Unsigned on purpose (no Developer ID). `null` stops electron-builder from
+  # picking up whatever identity happens to be in the keychain, which would make
+  # the artifact depend on the machine that built it. Recipients clear the
+  # quarantine flag once — see the README.
+  identity: null
+  # Skips `spctl` validation, which always fails for an unsigned build and would
+  # otherwise stop the build with an error that isn't one.
+  gatekeeperAssess: false
+  # Applies to every mac target (the zip); `dmg` below overrides its own. There
+  # is no `zip:` config section, so naming the zip has to happen here.
+  artifactName: ${productName}-${version}-universal-mac.${ext}
+
+dmg:
+  artifactName: ${productName}-${version}-universal.${ext}

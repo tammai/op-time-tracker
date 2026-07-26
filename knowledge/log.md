@@ -8,6 +8,9 @@ timestamp: 2026-07-21T00:00:00Z
 
 # Knowledge Bundle Log
 
+## 2026-07-26 (packaging)
+The app became distributable: `electron-builder` producing an unsigned macOS universal DMG + zip via `pnpm dist`, version 1.0.0, generated placeholder icon (`tools/make-icons.mjs`, pure Node PNG + `iconutil`). Packaging exposed that every renderer library sat in `dependencies`, so electron-builder shipped Vite's own toolchain inside the app and the universal merge failed on an `@esbuild` binary — they belong in `devDependencies`, leaving `electron-store` + `zod` as the only runtime deps. Recorded in `playbooks/packaging-distribution.md` along with the unsigned-integrity trade-off and the signing path.
+
 ## 2026-07-26
 Time entries became editable in place and movable to another day (row actions in the day modal, whole-entry PATCH because the update is a full replacement). Editing exposed that a select can only label an option it holds: the edited entry's work package is rarely in the priority suggestions, so the picker showed a bare `#12345`. Labelled from the entry's own `_links.workPackage.title` instead of a new fetch — recorded in `domains/openproject-response-shapes.md`. A second pass found the same symptom on any selected search result: `USelectMenu` resets the search term as part of selecting, so the chosen item leaves the results in the same tick and a label captured *on selection* is always a tick late. The picker now banks every subject it shows (`utils/work-package-label.ts`, pure and unit-tested).
 
