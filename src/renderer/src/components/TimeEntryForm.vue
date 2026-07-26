@@ -276,9 +276,23 @@ watch(
   { immediate: true }
 )
 
-/** No activity can be chosen → saving would 422. Block submit instead. */
+/** Nothing to pick → the select stays disabled whatever the reason. */
+const hasNoActivityOptions = computed(() => activityItems.value.length === 0)
+
+/**
+ * The selected work package's project genuinely offers no activity → saving
+ * would 422, so block submit and say so.
+ *
+ * Requires a work package. Without one the activity query never runs, and its
+ * empty list means "nothing asked yet" — warning "No activities in this
+ * project" there names a project the user hasn't chosen and reads as a fault in
+ * an untouched form.
+ */
 const hasNoActivities = computed(
-  () => !activitiesLoading.value && activityItems.value.length === 0
+  () =>
+    state.value.workPackageId !== undefined &&
+    !activitiesLoading.value &&
+    hasNoActivityOptions.value
 )
 
 // ---------------------------------------------------------------------------
@@ -417,13 +431,17 @@ async function onSubmit(event: { data: FormState }): Promise<void> {
     </UFormField>
 
     <div class="flex items-start gap-3">
-      <UFormField name="activityId" class="flex-1">
+      <!-- Activity absorbs what's left rather than claiming the row: its values
+           are single words ("Development", "Management"), so past ~24rem the
+           extra width is empty space taken from the hours field beside it.
+           `min-w-0` so a long activity name truncates instead of pushing. -->
+      <UFormField name="activityId" class="min-w-0 flex-1">
         <USelectMenu
           v-model="state.activityId"
           :items="activityItems"
           value-key="value"
           :loading="activitiesLoading"
-          :disabled="locked || hasNoActivities"
+          :disabled="locked || hasNoActivityOptions"
           icon="i-lucide-tag"
           placeholder="Select an activity"
           aria-label="Activity"
@@ -431,14 +449,25 @@ async function onSubmit(event: { data: FormState }): Promise<void> {
         />
       </UFormField>
 
-      <UFormField name="hours" class="w-32">
+      <!-- The only field whose value says nothing about itself: a select shows
+           its placeholder, the textarea its prompt, but a bare `1` needs
+           naming. Horizontal so the row stays one line — `orientation` is the
+           component's own prop, not a hand-rolled flex wrapper. The label is
+           bound to the input by `for`/`id`, so it replaces the `aria-label`
+           rather than doubling it. -->
+      <UFormField
+        name="hours"
+        label="Hours"
+        orientation="horizontal"
+        class="basis-56 shrink-0"
+        :ui="{ container: 'flex-1' }"
+      >
         <UInputNumber
           v-model="state.hours"
           :min="0.25"
           :max="maxHours"
           :step="0.25"
           :disabled="locked"
-          aria-label="Hours"
           class="w-full"
         />
       </UFormField>
