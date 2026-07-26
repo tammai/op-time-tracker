@@ -10,6 +10,11 @@ import {
   workPackageQueries
 } from '@renderer/composables/queries/work-packages'
 import type { WorkPackageCollection } from '@renderer/composables/queries/work-packages'
+import {
+  formatWorkPackageLabel,
+  workPackageSelectionLabel,
+  type KnownWorkPackageSubject
+} from '@renderer/utils/work-package-label'
 
 /**
  * Options for the time-entry form's work-package select.
@@ -37,13 +42,8 @@ export interface WorkPackageItem {
 
 type WorkPackage = WorkPackageCollection['_embedded']['elements'][number]
 
-/** The id leads: it's what the user looks up in OpenProject itself. */
-function formatLabel(id: number, subject: string): string {
-  return `#${id} · ${subject}`
-}
-
 function toItem(wp: WorkPackage): WorkPackageItem {
-  return { label: formatLabel(wp.id, wp.subject), value: wp.id }
+  return { label: formatWorkPackageLabel(wp.id, wp.subject), value: wp.id }
 }
 
 export interface UseWorkPackagePickerOptions {
@@ -59,7 +59,7 @@ export interface UseWorkPackagePickerOptions {
    * Carries the id it belongs to so a subject can never label a *different*
    * selection.
    */
-  knownSubject?: () => { id: number; subject: string } | null
+  knownSubject?: () => KnownWorkPackageSubject | null
 }
 
 export function useWorkPackagePicker(options: UseWorkPackagePickerOptions) {
@@ -126,50 +126,29 @@ export function useWorkPackagePicker(options: UseWorkPackagePickerOptions) {
   // -------------------------------------------------------------------------
 
   /**
-   * Label of the current selection, captured while it is still in the list —
-   * and the id it was captured for. Without this, selecting a search result and
-   * then clearing the search leaves the trigger blank: the chosen id is no
-   * longer among the options, so the select has no label to render for it.
+   * Every subject this picker has *shown*, by id.
    *
-   * The id is stored alongside because a capture is only kept while the lists
-   * don't hold the selection (a search for another term drops it from
-   * `searchResults` without the selection changing). Once the *selection*
-   * changes to an id no list knows, the stale label is dropped rather than
-   * relabelling the new item with the old one's subject.
+   * Both sources are transient — a search's results are dropped the moment the
+   * term changes, and `USelectMenu` resets the term as part of selecting
+   * (`resetSearchTermOnSelect`, on by default) — so a subject has to be banked
+   * as items pass through. Capturing it when the selection changes instead is a
+   * tick too late: the chosen item has already left `searchResults`, leaving
+   * the trigger to render a bare `#12345`.
+   *
+   * Bounded by what the user has actually seen: one priority page plus one item
+   * per completed search.
    */
-  const selectedLabel = ref<{ id: number; label: string } | null>(null)
+  const seenSubjects = ref(new Map<number, string>())
 
   watch(
-    [options.selectedId, priorityItems, searchResults],
-    ([id, priority, results]) => {
-      if (id === undefined) {
-        selectedLabel.value = null
-        return
-      }
-      const match =
-        priority.find((wp) => wp.id === id) ?? results.find((wp) => wp.id === id)
-      if (match) {
-        selectedLabel.value = { id, label: toItem(match).label }
-      } else if (selectedLabel.value?.id !== id) {
-        selectedLabel.value = null
+    [priorityItems, searchResults],
+    ([priority, results]) => {
+      for (const wp of [...priority, ...results]) {
+        seenSubjects.value.set(wp.id, wp.subject)
       }
     },
     { immediate: true }
   )
-
-  /**
-   * The label to render for a selection no list holds: the captured one, else
-   * the caller's known subject, else the id alone — which is all there is when
-   * the entry's link carried no title.
-   */
-  function labelForSelection(id: number): string {
-    if (selectedLabel.value?.id === id) return selectedLabel.value.label
-    const known = options.knownSubject?.()
-    if (known?.id === id && known.subject !== '') {
-      return formatLabel(id, known.subject)
-    }
-    return `#${id}`
-  }
 
   const items = computed<WorkPackageItem[]>(() => {
     const source = isServerSearchActive.value
@@ -181,7 +160,14 @@ export function useWorkPackagePicker(options: UseWorkPackagePickerOptions) {
     // the select would render an empty trigger for a valid value.
     const id = options.selectedId()
     if (id !== undefined && !list.some((item) => item.value === id)) {
-      list.unshift({ label: labelForSelection(id), value: id })
+      list.unshift({
+        label: workPackageSelectionLabel(
+          id,
+          seenSubjects.value,
+          options.knownSubject?.()
+        ),
+        value: id
+      })
     }
     return list
   })
