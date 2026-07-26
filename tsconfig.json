@@ -25,9 +25,15 @@
       "#build/ui/*": ["./node_modules/.nuxt-ui/ui/*"]
     }
   },
-  "references": [
-    { "path": "./tsconfig.node.json" },
-    { "path": "./tsconfig.web.json" }
-  ],
+  // Editor root: supplies the path aliases IDEs resolve against. It gates
+  // nothing — `files: []` means `tsc -p tsconfig.json` checks zero files, and
+  // `-p` does not follow `references` (only `--build` does, which this repo
+  // can't use: tsconfig.node.json and tsconfig.web.json both own
+  // `src/shared/**`, so declaration emit collides). `pnpm type-check`
+  // therefore runs each real project explicitly — see package.json.
+  //
+  // tsconfig.web.json is deliberately absent below: it is non-composite, so
+  // it cannot be a reference target.
+  "references": [{ "path": "./tsconfig.node.json" }],
   "files": []
 }

@@ -188,6 +188,20 @@ const searchPlaceholder = computed(() =>
     : `Search by ID (${WORK_PACKAGE_SEARCH_MIN_DIGITS}–${WORK_PACKAGE_SEARCH_MAX_DIGITS} digits)…`
 )
 
+/**
+ * Props for the select's search box. Not inline in the template: `InputProps`
+ * marks its `InputHTMLAttributes` base `@vue-ignore`, so `inputmode` and
+ * `maxlength` are missing from the resolved prop type though the `<input>`
+ * still honours them. Excess property checking only fires on fresh literals,
+ * so passing a variable keeps the behaviour without a cast.
+ */
+const searchInputProps = computed(() => ({
+  placeholder: searchPlaceholder.value,
+  icon: 'i-lucide-search',
+  inputmode: 'numeric',
+  maxlength: WORK_PACKAGE_SEARCH_MAX_DIGITS
+}))
+
 // ---------------------------------------------------------------------------
 // Activities — required by OpenProject, scoped to the selected work package.
 // ---------------------------------------------------------------------------
@@ -355,12 +369,7 @@ async function onSubmit(event: { data: FormState }): Promise<void> {
         icon="i-lucide-package"
         placeholder="Select a work package"
         aria-label="Work package"
-        :search-input="{
-          placeholder: searchPlaceholder,
-          icon: 'i-lucide-search',
-          inputmode: 'numeric',
-          maxlength: WORK_PACKAGE_SEARCH_MAX_DIGITS
-        }"
+        :search-input="searchInputProps"
         :ignore-filter="isServerSearchActive"
         class="w-full"
       >

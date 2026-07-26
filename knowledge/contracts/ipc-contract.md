@@ -33,7 +33,9 @@ There is still no getter for the API key. `getConnectionInfo()` returns only `{ 
 ## Drift gate
 CI (or the local pre-commit gate) runs `pnpm lint && pnpm type-check && pnpm test --run`. A type mismatch between `src/preload/types.ts` and `src/main/schemas/` shows up as a typecheck failure.
 
-**Known gap:** `pnpm type-check` does **not** currently cover the renderer — `vue-tsc -p tsconfig.json` on a solution-style config with `files: []` checks nothing, and `tsconfig.web.json`'s `@renderer/*` path mapping is missing the inner `src/`. Renderer-side contract drift is therefore caught only by `pnpm build`, not by the typecheck gate.
+`pnpm type-check` runs the three real projects explicitly — `tsconfig.node.json` (main/preload/shared), `tsconfig.web.json` (renderer, `.vue` included), `tsconfig.test.json` (tests). Renderer-side contract drift is caught by the gate, not just by `pnpm build`.
+
+Do **not** replace those three with `-p tsconfig.json`: that config is `files: []` plus `references`, and `-p` does not follow references, so it silently checks nothing. That is exactly how the renderer went unchecked before — a deliberate `.vue` type error passed the gate. `--build` would follow them but fails here, because the node and web projects both own `src/shared/**` and collide on declaration emit; splitting a `tsconfig.shared.json` out is the prerequisite for ever using it.
 
 ## Citations
 - `src/preload/types.ts` — repo, the actual contract

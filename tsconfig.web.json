@@ -1,28 +1,43 @@
 {
   "extends": "@vue/tsconfig/tsconfig.dom.json",
-    "include": [
-      "src/renderer/**/*",
-      "src/renderer/**/*.vue",
-      "src/preload/types.ts",
-      "src/shared/**/*",
-      "auto-imports.d.ts",
-      "components.d.ts"
+  "include": [
+    "src/renderer/**/*",
+    "src/renderer/**/*.vue",
+    "src/preload/types.ts",
+    "src/shared/**/*",
+    "auto-imports.d.ts",
+    "components.d.ts"
+  ],
+  "compilerOptions": {
+    "composite": false,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "target": "ESNext",
+    "lib": [
+      "ESNext",
+      "DOM",
+      "DOM.Iterable"
     ],
-    "compilerOptions": {
-      "composite": true,
-      "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.web.tsbuildinfo",
-      "module": "ESNext",
-      "moduleResolution": "Bundler",
-      "target": "ESNext",
-      "lib": ["ESNext", "DOM", "DOM.Iterable"],
-      "types": ["electron-vite/node"],
-      "baseUrl": ".",
-      "paths": {
-        "@renderer/*": ["src/renderer/*"],
-        "@opentracker/preload": ["src/preload/index.ts"],
-        "@shared/*": ["src/shared/*"],
-        "~~/*": ["./*"],
-        "#build/ui/*": ["./node_modules/.nuxt-ui/ui/*"]
-      }
+    "types": [
+      "electron-vite/node"
+    ],
+    "baseUrl": ".",
+    "paths": {
+      "@renderer/*": [
+        "src/renderer/src/*"
+      ],
+      "@opentracker/preload": [
+        "src/preload/index.ts"
+      ],
+      "@shared/*": [
+        "src/shared/*"
+      ],
+      "~~/*": [
+        "./*"
+      ],
+      "#build/ui/*": [
+        "./node_modules/.nuxt-ui/ui/*"
+      ]
     }
+  }
 }

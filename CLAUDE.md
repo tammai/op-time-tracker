@@ -49,7 +49,7 @@ The Zod schema in `src/main/schemas/` is the single source of truth for both the
 
 ## Repo-wide constraints
 
-- **Two typecheck projects.** `tsconfig.json` is a reference shell (`files: []`) over `tsconfig.node.json` (main/preload/shared) and `tsconfig.web.json` (renderer); `tsconfig.test.json` covers `tests/`. An error can be invisible in one project and fatal in another — hence two passes.
+- **Three typecheck projects**, each run explicitly by `pnpm type-check`: `tsconfig.node.json` (main/preload/shared), `tsconfig.web.json` (renderer, incl. `.vue`), `tsconfig.test.json` (`tests/`). An error can be invisible in one and fatal in another — hence three passes. `tsconfig.json` is an editor-only root: `files: []`, and `-p` ignores `references`, so it checks nothing. Never fold the three back into it.
 - **Harness scripts are lint-excluded**: `.claude/**`, `.opencode/**`, `tools/**`, `scripts/**`, `knowledge/**`, `graphify-out/**` in `eslint.config.js`.
 - **`PLAN.md` is a disposable working file** — written on spec approval, deleted when the task ships. The spec-gate guard blocks edits >20 lines (outside tests/docs/config) unless it exists with `Status: approved`.
 - **Budget gate.** `tools/context_budget.mjs` caps `CLAUDE.md` and `AGENTS.md` at 60 lines each and always-loaded harness text at 12 000 chars, and fails the commit. Prefer adding detail to a path-scoped rule over this file.
