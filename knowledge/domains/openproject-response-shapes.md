@@ -35,6 +35,11 @@ and `_links.status.title` off a work package.
   depending on the instance and endpoint. Accepted as any string.
 - **Formattables can be an object, a bare string, or `null`** — see
   `TimeEntryCommentSchema`.
+- **A link's `title` is the referenced resource's display name**, so a time
+  entry already carries its work package's subject
+  (`_links.workPackage.title`). The edit form labels its picker from that
+  rather than fetching the work package — an entry's item is rarely in the
+  loaded suggestions, and there is no `getWorkPackage` bridge method.
 
 ## Searching by id prefix: two dead ends, then direct fetches
 

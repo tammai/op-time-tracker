@@ -28,6 +28,10 @@ import type { TimeEntryDraft } from '@renderer/utils/time-entry-draft'
  * scoping — so they share a component. Splitting them would mean maintaining
  * two copies of the work-package/activity wiring that would drift.
  *
+ * Neither mode carries a date field: both write to the day the modal is
+ * showing. Moving an entry to another day is the row's own date action in
+ * `DayEntriesModal`.
+ *
  * Conventions (`.opencode/rules/conventions-frontend.md`):
  * - No direct `window.openproject.*` calls — the work-package list, the
  *   activity list, and both writes go through query/mutation composables,
@@ -53,6 +57,12 @@ const props = defineProps<{
    * reloads the fields — the parent owns which entry, if any, is under edit.
    */
   draft?: TimeEntryDraft | null
+  /**
+   * Lock the form because a write started elsewhere in the modal (a row being
+   * moved or deleted). One write at a time across the whole modal: a second
+   * one started mid-flight would race the first's cache invalidation.
+   */
+  busy?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -62,6 +72,8 @@ const emit = defineEmits<{
   cancelEdit: []
   /** An edit failed because the entry no longer exists on the server. */
   missing: []
+  /** This form's own save started (`true`) or settled (`false`). */
+  'update:saving': [value: boolean]
 }>()
 
 const isEditing = computed(() => props.draft != null)
@@ -139,11 +151,18 @@ const state = ref<{
 const saveError = ref<{ code: string; message: string } | null>(null)
 
 /**
- * Load the entry under edit into the fields, and reset them when edit mode
- * ends. Add mode keeps the previously chosen work package + activity so
- * logging a second entry against the same item is quick — but leaving edit
- * mode must not leave the edited entry's hours and comment sitting in what is
- * now a "new entry" form, so those two are cleared.
+ * Load the entry under edit into the fields, and clear them when edit mode
+ * ends.
+ *
+ * Leaving edit mode empties the work package too, not just the hours and
+ * comment: the edited entry's item is not a choice the user made for a *new*
+ * entry, so keeping it selected turned a cancelled edit into a pre-filled
+ * "log time against that same item" form. The activity follows, since the
+ * activity watch reselects whenever the work package changes.
+ *
+ * Logging a second entry against the same item is still quick — that's the
+ * reset in `onSubmit`, which deliberately keeps the work package after a
+ * *create*, where the user did pick it.
  */
 watch(
   () => props.draft,
@@ -158,6 +177,7 @@ watch(
       }
       return
     }
+    state.value.workPackageId = undefined
     state.value.hours = DEFAULT_HOURS
     state.value.comment = ''
   }
@@ -169,6 +189,9 @@ watch(
 
 // Suggestions are the user's priority items; typing a full id searches the
 // whole instance and replaces them. See `useWorkPackagePicker`.
+// The edited entry's item is rarely in the suggestions, and the select can
+// only label an option it holds — so hand it the subject the entry already
+// carries, or the trigger reads as a bare `#12345`.
 const {
   items: workPackageItems,
   searchTerm: workPackageSearch,
@@ -176,7 +199,13 @@ const {
   isLoading: workPackagesLoading,
   error: workPackagesError,
   searchError: workPackageSearchError
-} = useWorkPackagePicker({ selectedId: () => state.value.workPackageId })
+} = useWorkPackagePicker({
+  selectedId: () => state.value.workPackageId,
+  knownSubject: () =>
+    props.draft
+      ? { id: props.draft.workPackageId, subject: props.draft.workPackageSubject }
+      : null
+})
 
 /**
  * "5 digits" while the minimum equals the cap, "4–5 digits" if the minimum is
@@ -261,6 +290,18 @@ const { mutateAsync: updateTimeEntry, isLoading: updating } = useUpdateTimeEntry
 
 const saving = computed(() => creating.value || updating.value)
 
+// The modal locks its entry rows while this form is saving, the mirror of the
+// `busy` prop locking the form while a row is being moved or deleted.
+watch(saving, (value) => emit('update:saving', value))
+
+/**
+ * Every interactive control is disabled while *any* write in the modal is in
+ * flight — not just this form's own. Kept separate from `saving` so the submit
+ * button only spins for its own save; a row's delete shouldn't make this
+ * button look like it's the thing loading.
+ */
+const locked = computed(() => saving.value || props.busy === true)
+
 function toBridgeError(e: unknown): { code: string; message: string } {
   const err = e as ({ code?: string; message?: string } & Error) | null
   return {
@@ -280,6 +321,9 @@ async function onSubmit(event: { data: FormState }): Promise<void> {
   // comment" (the update is a full replacement) — which is exactly what
   // emptying the field should do.
   const comment = event.data.comment?.trim()
+  // The form always writes to the day the modal is showing. Moving an entry to
+  // another day is the row's own date action in `DayEntriesModal`, not a field
+  // here.
   const fields = {
     workPackageId: event.data.workPackageId,
     activityId: event.data.activityId,
@@ -336,28 +380,6 @@ async function onSubmit(event: { data: FormState }): Promise<void> {
     class="flex flex-col gap-4"
     @submit="onSubmit"
   >
-    <!-- Edit mode is a different action on the same fields, so say so up
-         front — otherwise "Save changes" is the only thing distinguishing it
-         from the add form. -->
-    <div
-      v-if="isEditing"
-      class="flex items-center justify-between gap-2 rounded-md bg-elevated/50 px-3 py-2"
-    >
-      <span class="flex items-center gap-1.5 text-sm text-highlighted">
-        <UIcon name="i-lucide-pencil" class="size-4 shrink-0 text-primary" />
-        <span>Editing entry #{{ props.draft?.id }}</span>
-      </span>
-      <UButton
-        color="neutral"
-        variant="ghost"
-        size="xs"
-        icon="i-lucide-x"
-        label="Cancel"
-        :disabled="saving"
-        @click="emit('cancelEdit')"
-      />
-    </div>
-
     <UFormField name="workPackageId">
       <USelectMenu
         v-model="state.workPackageId"
@@ -365,7 +387,7 @@ async function onSubmit(event: { data: FormState }): Promise<void> {
         :items="workPackageItems"
         value-key="value"
         :loading="workPackagesLoading"
-        :disabled="saving"
+        :disabled="locked"
         icon="i-lucide-package"
         placeholder="Select a work package"
         aria-label="Work package"
@@ -401,7 +423,7 @@ async function onSubmit(event: { data: FormState }): Promise<void> {
           :items="activityItems"
           value-key="value"
           :loading="activitiesLoading"
-          :disabled="saving || hasNoActivities"
+          :disabled="locked || hasNoActivities"
           icon="i-lucide-tag"
           placeholder="Select an activity"
           aria-label="Activity"
@@ -415,7 +437,7 @@ async function onSubmit(event: { data: FormState }): Promise<void> {
           :min="0.25"
           :max="maxHours"
           :step="0.25"
-          :disabled="saving"
+          :disabled="locked"
           aria-label="Hours"
           class="w-full"
         />
@@ -427,7 +449,7 @@ async function onSubmit(event: { data: FormState }): Promise<void> {
         v-model="state.comment"
         :rows="2"
         :maxrows="4"
-        :disabled="saving"
+        :disabled="locked"
         autoresize
         placeholder="What did you work on? (optional)"
         aria-label="Comment"
@@ -466,26 +488,58 @@ async function onSubmit(event: { data: FormState }): Promise<void> {
       :description="saveError.message"
     />
 
-    <div class="flex items-center justify-end gap-3">
-      <!-- Why the button is disabled, on the button's own row: it's a state of
-           the submit, not an event worth its own alert block. Suppressed when
-           the activities alert above is already explaining the same gap. -->
-      <p
-        v-if="hasNoActivities && !activitiesError"
-        class="text-warning flex items-center gap-1.5 text-xs"
-      >
-        <UIcon name="i-lucide-alert-triangle" class="size-4 shrink-0" />
-        <span>No activities in this project.</span>
-      </p>
+    <div class="flex items-center gap-3">
+      <!-- Messages take the free space; the buttons keep their intrinsic width
+           at the end of the row. Both live here rather than in alert blocks of
+           their own: each is a state of the submit sitting beside it — what
+           this save will apply to, and why it can't run. -->
+      <div class="flex min-w-0 flex-1 flex-col gap-1">
+        <!-- Edit mode is a different action on the same fields, so say so —
+             otherwise "Save changes" is all that distinguishes it. Styled
+             identically to the warning below, down to the colour: both are
+             one-line states of this submit, and a second colour here made them
+             read as two different kinds of notice. -->
+        <p
+          v-if="isEditing"
+          class="text-warning flex items-center gap-1.5 text-xs"
+        >
+          <UIcon name="i-lucide-pencil" class="size-4 shrink-0" />
+          <span class="truncate">Editing entry #{{ props.draft?.id }}</span>
+        </p>
 
-      <UButton
-        type="submit"
-        color="primary"
-        :icon="isEditing ? 'i-lucide-save' : 'i-lucide-plus'"
-        :label="isEditing ? 'Save changes' : 'Log time'"
-        :loading="saving"
-        :disabled="saving || hasNoActivities"
-      />
+        <!-- Suppressed when the activities alert above already explains the
+             same gap. -->
+        <p
+          v-if="hasNoActivities && !activitiesError"
+          class="text-warning flex items-center gap-1.5 text-xs"
+        >
+          <UIcon name="i-lucide-alert-triangle" class="size-4 shrink-0" />
+          <span class="truncate">No activities in this project.</span>
+        </p>
+      </div>
+
+      <!-- Cancel sits apart from the submit rather than grouped with it: they
+           aren't two halves of one control, and a gap makes the destructive-ish
+           one harder to hit by accident. Only the primary action carries an
+           icon. -->
+      <div class="flex shrink-0 items-center gap-2">
+        <UButton
+          v-if="isEditing"
+          color="neutral"
+          variant="soft"
+          label="Cancel"
+          :disabled="locked"
+          @click="emit('cancelEdit')"
+        />
+        <UButton
+          type="submit"
+          color="primary"
+          :icon="isEditing ? 'i-lucide-save' : 'i-lucide-plus'"
+          :label="isEditing ? 'Save changes' : 'Log time'"
+          :loading="saving"
+          :disabled="locked || hasNoActivities"
+        />
+      </div>
     </div>
   </UForm>
 </template>

@@ -37,13 +37,29 @@ export interface WorkPackageItem {
 
 type WorkPackage = WorkPackageCollection['_embedded']['elements'][number]
 
+/** The id leads: it's what the user looks up in OpenProject itself. */
+function formatLabel(id: number, subject: string): string {
+  return `#${id} · ${subject}`
+}
+
 function toItem(wp: WorkPackage): WorkPackageItem {
-  return { label: `#${wp.id} · ${wp.subject}`, value: wp.id }
+  return { label: formatLabel(wp.id, wp.subject), value: wp.id }
 }
 
 export interface UseWorkPackagePickerOptions {
   /** The form's current selection, so it stays labelled as the list swaps. */
   selectedId: () => number | undefined
+  /**
+   * A subject the caller already knows for a specific work package — the
+   * edited entry's item, read off its HAL link. Used to label the selection
+   * when neither source holds it, which is the normal case in edit mode: the
+   * entry's item is rarely among the user's priority suggestions, and without a
+   * subject the select can only render `#12345`.
+   *
+   * Carries the id it belongs to so a subject can never label a *different*
+   * selection.
+   */
+  knownSubject?: () => { id: number; subject: string } | null
 }
 
 export function useWorkPackagePicker(options: UseWorkPackagePickerOptions) {
@@ -110,12 +126,18 @@ export function useWorkPackagePicker(options: UseWorkPackagePickerOptions) {
   // -------------------------------------------------------------------------
 
   /**
-   * Label of the current selection, captured while it is still in the list.
-   * Without this, selecting a search result and then clearing the search
-   * leaves the trigger blank: the chosen id is no longer among the options,
-   * so the select has no label to render for it.
+   * Label of the current selection, captured while it is still in the list —
+   * and the id it was captured for. Without this, selecting a search result and
+   * then clearing the search leaves the trigger blank: the chosen id is no
+   * longer among the options, so the select has no label to render for it.
+   *
+   * The id is stored alongside because a capture is only kept while the lists
+   * don't hold the selection (a search for another term drops it from
+   * `searchResults` without the selection changing). Once the *selection*
+   * changes to an id no list knows, the stale label is dropped rather than
+   * relabelling the new item with the old one's subject.
    */
-  const selectedLabel = ref<string | null>(null)
+  const selectedLabel = ref<{ id: number; label: string } | null>(null)
 
   watch(
     [options.selectedId, priorityItems, searchResults],
@@ -126,10 +148,28 @@ export function useWorkPackagePicker(options: UseWorkPackagePickerOptions) {
       }
       const match =
         priority.find((wp) => wp.id === id) ?? results.find((wp) => wp.id === id)
-      if (match) selectedLabel.value = toItem(match).label
+      if (match) {
+        selectedLabel.value = { id, label: toItem(match).label }
+      } else if (selectedLabel.value?.id !== id) {
+        selectedLabel.value = null
+      }
     },
     { immediate: true }
   )
+
+  /**
+   * The label to render for a selection no list holds: the captured one, else
+   * the caller's known subject, else the id alone — which is all there is when
+   * the entry's link carried no title.
+   */
+  function labelForSelection(id: number): string {
+    if (selectedLabel.value?.id === id) return selectedLabel.value.label
+    const known = options.knownSubject?.()
+    if (known?.id === id && known.subject !== '') {
+      return formatLabel(id, known.subject)
+    }
+    return `#${id}`
+  }
 
   const items = computed<WorkPackageItem[]>(() => {
     const source = isServerSearchActive.value
@@ -138,12 +178,10 @@ export function useWorkPackagePicker(options: UseWorkPackagePickerOptions) {
     const list = source.map(toItem)
 
     // Keep the selection present in the list whichever source is showing, or
-    // the select would render an empty trigger for a valid value. `#123` is
-    // the fallback when the label was never seen (e.g. a selection restored
-    // before either list loaded).
+    // the select would render an empty trigger for a valid value.
     const id = options.selectedId()
     if (id !== undefined && !list.some((item) => item.value === id)) {
-      list.unshift({ label: selectedLabel.value ?? `#${id}`, value: id })
+      list.unshift({ label: labelForSelection(id), value: id })
     }
     return list
   })

@@ -2,6 +2,10 @@ import { z } from 'zod'
 
 import { parseHoursToDecimal } from '@shared/utils/time'
 import {
+  CALENDAR_DATE_PATTERN,
+  isCalendarDate
+} from '@shared/validation/calendar-date'
+import {
   TIME_ENTRY_ACTIVITY_PATH,
   TIME_ENTRY_PATH,
   WORK_PACKAGE_PATH,
@@ -289,14 +293,15 @@ const COMMENT_MAX_LENGTH = 2000
 export const CreateTimeEntryInputSchema = z.object({
   workPackageId: z.number().int().positive(),
   activityId: z.number().int().positive(),
-  /** ISO calendar date, must be a real day (rejects `2026-02-31`). */
+  /**
+   * ISO calendar date, must be a real day (rejects `2026-02-31`). The rule is
+   * shared with the renderer's date field via `isCalendarDate` so the inline
+   * message and this boundary check can't drift apart.
+   */
   spentOn: z
     .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/, 'spentOn must be an ISO YYYY-MM-DD date')
-    .refine((ymd) => {
-      const d = new Date(`${ymd}T00:00:00Z`)
-      return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === ymd
-    }, 'spentOn must be a real calendar date'),
+    .regex(CALENDAR_DATE_PATTERN, 'spentOn must be an ISO YYYY-MM-DD date')
+    .refine(isCalendarDate, 'spentOn must be a real calendar date'),
   /**
    * Decimal hours. Must be positive (a zero-hour entry is meaningless) and
    * at most 24 — a single entry cannot exceed one day.

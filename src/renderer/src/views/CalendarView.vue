@@ -7,6 +7,7 @@ import {
   getCalendarGridDays,
   type CalendarCell
 } from '@renderer/utils/calendar-dates'
+import { dayTotalColor } from '@renderer/utils/day-total'
 import { useUiStore } from '@renderer/stores/useUiStore'
 
 /**
@@ -119,7 +120,7 @@ function onCellClick(cell: CalendarCell): void {
         <div
           v-for="label in weekdayLabels"
           :key="label"
-          class="text-muted py-2 text-center text-xs font-medium uppercase tracking-wide"
+          class="text-muted px-2 py-2 text-right text-xs font-medium uppercase tracking-wide"
         >
           {{ label }}
         </div>
@@ -142,8 +143,11 @@ function onCellClick(cell: CalendarCell): void {
           ]"
           @click="() => onCellClick(cell)"
         >
+          <!-- `w-full text-right` rather than flipping the cell to `items-end`:
+               the day number aligns with the weekday label above it, while the
+               hours badge and count stay left where the eye picks them up. -->
           <span
-            class="text-sm tabular-nums"
+            class="w-full text-right text-sm tabular-nums"
             :class="[
               cell.inMonth ? 'text-default' : 'text-dimmed',
               cell.ymd === todayYmd ? 'font-bold text-primary' : ''
@@ -155,23 +159,34 @@ function onCellClick(cell: CalendarCell): void {
           <!-- Initial load: placeholder so the layout doesn't jump. -->
           <USkeleton v-if="isInitialLoading && cell.inMonth" class="h-4 w-10" />
 
-          <!-- Logged totals for the day. -->
-          <template v-else-if="cell.inMonth">
-            <template v-if="aggregate.days.get(cell.ymd)">
-              <span class="text-sm font-semibold text-primary tabular-nums">
-                {{ formatHours(aggregate.days.get(cell.ymd)?.hours ?? 0) }}
-              </span>
-              <span class="text-muted text-[11px]">
-                {{ aggregate.days.get(cell.ymd)?.entryCount }}
-                {{
-                  aggregate.days.get(cell.ymd)?.entryCount === 1
-                    ? 'entry'
-                    : 'entries'
-                }}
-              </span>
-            </template>
-            <span v-else class="text-dimmed text-xs tabular-nums">0h</span>
-          </template>
+          <!-- Logged total and entry count, on one line: they're one fact about
+               the day, and stacking them cost a row of cell height for no gain.
+               The count truncates rather than wrapping, so a narrow cell drops
+               characters from the label and never from the badge.
+               A day with nothing logged shows its number and nothing else — a
+               month of "0h" placeholders was noise, and an empty cell already
+               reads as empty. -->
+          <div
+            v-else-if="cell.inMonth && aggregate.days.get(cell.ymd)"
+            class="flex min-w-0 items-center gap-1.5"
+          >
+            <!-- Same badge treatment as a logged entry in the day modal, so an
+                 hours figure looks the same wherever it appears. -->
+            <UBadge
+              :color="dayTotalColor(aggregate.days.get(cell.ymd)?.hours ?? 0)"
+              variant="soft"
+              class="shrink-0 tabular-nums"
+              :label="formatHours(aggregate.days.get(cell.ymd)?.hours ?? 0)"
+            />
+            <span class="text-muted truncate text-[11px]">
+              {{ aggregate.days.get(cell.ymd)?.entryCount }}
+              {{
+                aggregate.days.get(cell.ymd)?.entryCount === 1
+                  ? 'entry'
+                  : 'entries'
+              }}
+            </span>
+          </div>
         </button>
       </div>
     </template>

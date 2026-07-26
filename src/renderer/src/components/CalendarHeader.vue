@@ -50,7 +50,9 @@ const {
       <span class="text-2xl font-normal text-highlighted">{{ yearLabel }}</span>
     </h1>
 
-    <!-- Centre: month total. -->
+    <!-- Centre: month total. Same `subtle` variant as the day badges in the
+         grid and the day modal — an hours figure looks the same everywhere;
+         only the size (`xl`) marks this one as the month's headline. -->
     <div class="flex flex-1 justify-center">
       <UBadge
         color="success"
@@ -62,25 +64,27 @@ const {
     </div>
 
     <!-- Right: month navigation, then the settings action. The gap separates
-         them; buttons *within* a `UFieldGroup` stay flush by design. -->
+         them; buttons *within* a `UFieldGroup` stay flush by design.
+         `subtle` throughout, matching the day modal's row actions — `soft`
+         has no ring, so a grouped set of them reads as one unsplit slab. -->
     <div class="flex flex-1 items-center justify-end gap-3">
       <UFieldGroup size="md">
         <UButton
           color="neutral"
-          variant="soft"
+          variant="subtle"
           icon="i-lucide-chevron-left"
           aria-label="Previous month"
           @click="prevMonth"
         />
         <UButton
           color="neutral"
-          variant="soft"
+          variant="subtle"
           label="Today"
           @click="goToToday"
         />
         <UButton
           color="neutral"
-          variant="soft"
+          variant="subtle"
           icon="i-lucide-chevron-right"
           aria-label="Next month"
           @click="nextMonth"
@@ -90,7 +94,7 @@ const {
       <UTooltip text="Settings">
         <UButton
           color="neutral"
-          variant="soft"
+          variant="subtle"
           size="md"
           icon="i-lucide-settings"
           aria-label="Settings"
