@@ -101,7 +101,12 @@ jobs:
       - name: Package
         # `pnpm build` first: electron-builder packages `out/`, it doesn't
         # compile it.
-        run: pnpm build && pnpm exec electron-builder ${{ matrix.builder_flag }}
+        #
+        # `--publish never` is load-bearing: on CI, with a tag and a GitHub
+        # remote, electron-builder infers a publish target and tries to create
+        # the release itself — which fails for want of a token, *after* the
+        # artifacts are already built. The upload is the `gh` step below.
+        run: pnpm build && pnpm exec electron-builder ${{ matrix.builder_flag }} --publish never
         env:
           # Both platforms ship unsigned. Without this, electron-builder hunts
           # the runner keychain for an identity and the failure mode is a
