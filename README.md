@@ -10,14 +10,26 @@ A month calendar over your own OpenProject time entries: see at a glance which
 days are short, click a day to log against it. It talks to nothing but your
 OpenProject server.
 
+![The month view — each day shows its logged total and entry count, green for a full 8-hour day](docs/images/calendar-month-view.png)
+
 ## 1. Install
 
-Grab the latest build from the repo's **Releases** page.
+> ### ⬇ [Download the latest release](https://github.com/tammai/op-time-tracker/releases/latest)
+>
+> | Platform | Grab this file |
+> |---|---|
+> | **macOS** — Apple Silicon or Intel | `OP.Time.Tracker-<version>-universal.dmg` |
+> | **Windows 10/11** — x64 | `OP.Time.Tracker-<version>-x64-setup.exe` |
+>
+> Prefer not to mount a disk image on macOS? Take the `-universal-mac.zip`
+> instead — same app.
 
-| Platform | File | First launch |
-|---|---|---|
-| macOS (Apple Silicon or Intel) | `…-universal.dmg` | Open the DMG, drag the app to **Applications**, then **right-click → Open → Open**. |
-| Windows 10/11 (x64) | `…-x64-setup.exe` | Run it, then **More info → Run anyway** at the SmartScreen prompt. Installs for your user only — no admin password. |
+Then, first launch only:
+
+| Platform | What to do |
+|---|---|
+| macOS | Open the DMG, drag the app to **Applications**, then **right-click → Open → Open**. |
+| Windows | Run the installer, then **More info → Run anyway** at the SmartScreen prompt. Installs for your user only — no admin password. |
 
 Both builds are unsigned, so each OS warns once on first launch. That's expected;
 [the reason is below](#the-builds-are-unsigned--what-recipients-see). You only do
@@ -198,10 +210,17 @@ platforms warn on first launch. Once per install:
 
 That is a genuine trade-off, not just a nag screen: recipients get no
 cryptographic evidence that the app came from you unmodified. Point them at the
-`SHA256SUMS-*.txt` files in the release and tell them to check
-(`shasum -a 256 <file>` / `Get-FileHash <file>`). To remove the warnings
-entirely, see `knowledge/playbooks/packaging-distribution.md` for what signing
-would change on each platform.
+`SHA256SUMS-*.txt` files, downloaded next to the artifact and checked in place:
+
+```sh
+shasum -a 256 -c SHA256SUMS-macos.txt      # macOS
+sha256sum -c SHA256SUMS-windows.txt        # Windows (Git Bash) — or Get-FileHash
+```
+
+The sums name the files as GitHub serves them (spaces become dots), so the check
+runs without renaming anything. To remove the warnings entirely, see
+`knowledge/playbooks/packaging-distribution.md` for what signing would change on
+each platform.
 
 ## Architecture
 
