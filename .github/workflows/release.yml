@@ -115,9 +115,24 @@ jobs:
 
       # Recipients can't verify an unsigned binary's origin, so the checksum is
       # the only integrity handle they get. Published with the artifacts.
+      #
+      # The names are rewritten to what GitHub actually serves: it strips the
+      # directory and replaces spaces with dots ("OP Time Tracker-1.1.0.dmg" →
+      # "OP.Time.Tracker-1.1.0.dmg"). Left as the tool emits them, every line
+      # names a file the downloader doesn't have and `shasum -c` fails on all
+      # of them — which teaches people to skip the check. `*` marks binary
+      # mode, which both `shasum -c` and `sha256sum -c` accept.
       - name: Checksums
         shell: bash
-        run: ${{ matrix.sha_cmd }} ${{ matrix.artifacts }} > "release/SHA256SUMS-${{ matrix.name }}.txt"
+        run: |
+          sums="release/SHA256SUMS-${{ matrix.name }}.txt"
+          : > "$sums"
+          for f in ${{ matrix.artifacts }}; do
+            hash=$(${{ matrix.sha_cmd }} "$f" | cut -d' ' -f1)
+            name=$(basename "$f")
+            echo "$hash *${name// /.}" >> "$sums"
+          done
+          cat "$sums"
 
       - name: Upload to draft release
         shell: bash
