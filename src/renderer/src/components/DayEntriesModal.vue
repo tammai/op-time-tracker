@@ -5,6 +5,7 @@ import { useQuery } from '@pinia/colada'
 // globals: those satisfy the type checker but not eslint's `no-undef`, and the
 // generated file is gitignored, so a fresh clone would fail lint.
 import { useToast } from '@nuxt/ui/composables/useToast'
+import type { DropdownMenuItem } from '@nuxt/ui/components/DropdownMenu.vue'
 import { parseDate, type DateValue } from '@internationalized/date'
 import type { TimeEntry } from '@opentracker/preload'
 
@@ -172,14 +173,14 @@ function stopEditing(): void {
 }
 
 /**
- * The row whose entry is loaded in the form is locked: its own actions are
+ * The row whose entry is loaded in the form is locked: its actions menu is
  * disabled while the edit is open.
  *
- * The form above *is* the way to act on that entry — a second pencil click
- * would reload the draft and discard what's been typed, and a move or delete
- * would leave the form editing something that has changed underneath it. The
- * warning background and the dimmed content say which row it is; the disabled
- * actions say to finish or cancel the edit first.
+ * The form above *is* the way to act on that entry — a second Edit would
+ * reload the draft and discard what's been typed, and a move or delete would
+ * leave the form editing something that has changed underneath it. The warning
+ * background and the dimmed content say which row it is; the disabled menu
+ * says to finish or cancel the edit first.
  */
 function isUnderEdit(entry: TimeEntry): boolean {
   return editingDraft.value?.id === entry.id
@@ -363,6 +364,48 @@ async function confirmDelete(entry: TimeEntry): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Row actions menu
+// ---------------------------------------------------------------------------
+
+/**
+ * The row's actions, as menu items behind one ellipsis button rather than a row
+ * of icon buttons: three ghost icons crowded the hours badge, and a menu's
+ * labels say what each action does without needing a tooltip.
+ *
+ * Per-item `disabled` covers only what that action itself can't do — an entry
+ * with no readable draft can't be edited (`draftsByEntryId`), one with no
+ * readable activity can't be moved (`canMove`). Whether the row may act at all
+ * — a write in flight, or the entry being edited above — is on the trigger,
+ * which disables the whole menu.
+ *
+ * Rebuilt per render rather than memoised: the items close over row state that
+ * changes on every write, and there are at most a day's worth of rows in view.
+ */
+function entryActions(entry: TimeEntry): DropdownMenuItem[] {
+  return [
+    {
+      label: 'Edit',
+      icon: 'i-lucide-pencil',
+      disabled: !draftsByEntryId.value.get(entry.id),
+      onSelect: () => startEditing(entry)
+    },
+    {
+      label: 'Change date',
+      icon: 'i-lucide-calendar',
+      disabled: !canMove(entry),
+      onSelect: () => startDateChange(entry)
+    },
+    { type: 'separator' },
+    {
+      label: 'Delete',
+      icon: 'i-lucide-trash-2',
+      color: 'error',
+      onSelect: () => askDelete(entry)
+    }
+  ]
+}
+
 /**
  * Bridge errors cross IPC as `{ code, message }` (see
  * `src/main/ipc/openproject.ts` → `toIpcError`); read them defensively and
@@ -457,9 +500,9 @@ const errorMessage = computed(() => {
           variant="naked"
         />
 
-        <!-- List. Each row carries edit + delete; delete confirms in place
-             rather than in a nested modal, so the entry stays visible while
-             the user decides. -->
+        <!-- List. Each row carries its actions in an ellipsis menu; delete and
+             move confirm in place rather than in a nested modal, so the entry
+             stays visible while the user decides. -->
         <ul v-else class="flex max-h-56 flex-col gap-2 overflow-y-auto">
           <li
             v-for="entry in entries"
@@ -506,41 +549,27 @@ const errorMessage = computed(() => {
                   class="mr-1 tabular-nums"
                   :label="`${timeEntryHours(entry).toFixed(2)}h`"
                 />
-                <!-- Three separate ghost buttons rather than one grouped
-                     control: ghost has no ring, so a `UFieldGroup` around them
-                     drew no seams and only removed the spacing. Each carries
-                     its own size. -->
-                <UButton
-                  color="neutral"
-                  variant="ghost"
-                  size="xs"
-                  icon="i-lucide-pencil"
-                  :aria-label="`Edit entry #${entry.id}`"
-                  :disabled="
-                    isBusy || isUnderEdit(entry) || !draftsByEntryId.get(entry.id)
-                  "
-                  @click="startEditing(entry)"
-                />
-                <UButton
-                  color="neutral"
-                  variant="ghost"
-                  size="xs"
-                  icon="i-lucide-calendar"
-                  :aria-label="`Change the date of entry #${entry.id}`"
-                  :loading="movingId === entry.id"
-                  :disabled="isBusy || isUnderEdit(entry) || !canMove(entry)"
-                  @click="startDateChange(entry)"
-                />
-                <UButton
-                  color="neutral"
-                  variant="ghost"
-                  size="xs"
-                  icon="i-lucide-trash-2"
-                  :aria-label="`Delete entry #${entry.id}`"
-                  :loading="deletingId === entry.id"
+                <!-- One menu rather than a row of icon buttons. The content is
+                     portaled, so it isn't clipped by the list's own
+                     `overflow-y-auto`; `align: 'end'` keeps it at the right
+                     edge of the row, and `side: 'top'` opens it upwards, clear
+                     of the confirm strips that appear below the row. Reka still
+                     flips it back down on its own when there's no room above. -->
+                <UDropdownMenu
+                  :items="entryActions(entry)"
+                  :content="{ align: 'end', side: 'top' }"
                   :disabled="isBusy || isUnderEdit(entry)"
-                  @click="askDelete(entry)"
-                />
+                >
+                  <UButton
+                    color="neutral"
+                    variant="ghost"
+                    size="xs"
+                    icon="i-lucide-ellipsis-vertical"
+                    :aria-label="`Actions for entry #${entry.id}`"
+                    :loading="deletingId === entry.id || movingId === entry.id"
+                    :disabled="isBusy || isUnderEdit(entry)"
+                  />
+                </UDropdownMenu>
               </div>
             </div>
 
