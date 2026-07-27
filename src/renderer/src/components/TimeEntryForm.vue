@@ -299,6 +299,20 @@ function setHours(value: number): void {
 }
 
 /**
+ * What the slider binds to. The getter pins an over-cap entry to the end of the
+ * track without rewriting its hours; the setter routes through `setHours`.
+ *
+ * A typed computed with `v-model`, not an inline `@update:model-value` lambda:
+ * `components.d.ts` is generated and gitignored, so on a fresh clone (every CI
+ * run) `USlider` has no resolved type and such a lambda's parameter would be an
+ * implicit `any` — a type error that appears only in CI.
+ */
+const sliderHours = computed<number>({
+  get: () => Math.min(state.value.hours, MAX_HOURS),
+  set: setHours
+})
+
+/**
  * The marks under the track: the floor, then every whole hour to the cap. Most
  * entries land on one, so they double as one-click shortcuts.
  *
@@ -540,14 +554,13 @@ async function onSubmit(event: { data: FormState }): Promise<void> {
            clamped for display only — an over-cap entry must not have its hours
            rewritten just by being opened. -->
       <USlider
-        :model-value="Math.min(state.hours, MAX_HOURS)"
+        v-model="sliderHours"
         :min="HOURS_MIN"
         :max="MAX_HOURS"
         :step="0.25"
         :disabled="locked"
         tooltip
         class="mt-2"
-        @update:model-value="(value) => setHours(Number(value))"
       />
 
       <!-- Whole-hour anchors. Inset by half the thumb (`size-4` → `mx-2`) so a
