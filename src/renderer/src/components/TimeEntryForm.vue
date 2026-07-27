@@ -18,10 +18,7 @@ import {
   useUpdateTimeEntry
 } from '@renderer/composables/queries/time-entries'
 import type { TimeEntryDraft } from '@renderer/utils/time-entry-draft'
-import {
-  clampEntryHours,
-  parseTypedHours
-} from '@renderer/utils/entry-hours'
+import { HOURS_MIN, clampEntryHours } from '@renderer/utils/entry-hours'
 
 /**
  * The time-entry form, rendered in the day modal's top section. One component
@@ -82,26 +79,28 @@ const emit = defineEmits<{
 
 const isEditing = computed(() => props.draft != null)
 
-/** Default entry length — the most common single log. */
-const DEFAULT_HOURS = 1
+/**
+ * Default entry length — half a working day, the midpoint of the slider. Whether
+ * a log is shorter or longer, it's a drag in one direction rather than a haul
+ * from the end of the track.
+ */
+const DEFAULT_HOURS = 4
 
 /**
- * Longest *new* entry the form accepts — a working day. The stepper's `max`
- * and the schema below share it, so the input can't offer a value the
- * validation would then reject. The main process stays authoritative with its
- * own (looser, 24h) cap in `CreateTimeEntryInputSchema`.
+ * Longest entry the form accepts, in either mode — a working day. House rule:
+ * no single task exceeds 8h on one day, so editing doesn't get a looser cap
+ * than logging.
+ *
+ * The slider's `max` and the schema below share it, so the control can't offer
+ * a value the validation would then reject. The main process stays
+ * authoritative with its own (looser, 24h) cap in `CreateTimeEntryInputSchema`.
+ *
+ * An entry longer than this can still arrive from OpenProject's web UI. The form
+ * doesn't rewrite it on load — it pins the thumb at the cap, keeps the true
+ * figure in the label, and says why (`hoursCappedNotice`), so the correction is
+ * the user's to make deliberately.
  */
 const MAX_HOURS = 8
-
-/**
- * The cap when editing: the main process's own limit, not the working-day one.
- * An entry longer than 8h can exist (logged in OpenProject's web UI, or before
- * this cap), and the stricter limit would make its comment uneditable without
- * also rewriting its hours — a dead end the user can't resolve from here.
- */
-const MAX_HOURS_EDIT = 24
-
-const maxHours = computed(() => (isEditing.value ? MAX_HOURS_EDIT : MAX_HOURS))
 
 /**
  * Client-side schema for immediate field feedback. The main process
@@ -109,32 +108,24 @@ const maxHours = computed(() => (isEditing.value ? MAX_HOURS_EDIT : MAX_HOURS))
  * authoritative — this one exists so the user sees an inline message instead
  * of a round-trip rejection. Zod 4 takes a single `error` for the
  * type-mismatch message.
- *
- * Built by a function rather than declared inline, so the hours cap can vary
- * with the mode (see `maxHours`) while the inferred `FormState` stays one
- * fixed type.
  */
-function buildFormSchema(hoursMax: number) {
-  return z.object({
-    workPackageId: z
-      .number({ error: 'Choose a work package.' })
-      .int()
-      .positive('Choose a work package.'),
-    activityId: z
-      .number({ error: 'Choose an activity.' })
-      .int()
-      .positive('Choose an activity.'),
-    hours: z
-      .number({ error: 'Enter the hours worked.' })
-      .positive('Hours must be greater than 0.')
-      .max(hoursMax, `A single entry cannot exceed ${hoursMax} hours.`),
-    comment: z.string().max(2000, 'Comment is too long.').optional()
-  })
-}
+const formSchema = z.object({
+  workPackageId: z
+    .number({ error: 'Choose a work package.' })
+    .int()
+    .positive('Choose a work package.'),
+  activityId: z
+    .number({ error: 'Choose an activity.' })
+    .int()
+    .positive('Choose an activity.'),
+  hours: z
+    .number({ error: 'Enter the hours worked.' })
+    .positive('Hours must be greater than 0.')
+    .max(MAX_HOURS, `A single entry cannot exceed ${MAX_HOURS} hours.`),
+  comment: z.string().max(2000, 'Comment is too long.').optional()
+})
 
-const formSchema = computed(() => buildFormSchema(maxHours.value))
-
-type FormState = z.infer<ReturnType<typeof buildFormSchema>>
+type FormState = z.infer<typeof formSchema>
 
 const state = ref<{
   workPackageId: number | undefined
@@ -179,11 +170,17 @@ watch(
         hours: draft.hours,
         comment: draft.comment
       }
+      // An entry logged elsewhere can be longer than the house cap. Its hours
+      // are kept as they are — the form doesn't rewrite an entry the user only
+      // opened to fix a comment — but the thumb can't go that far, so say why
+      // before the save reports it.
+      hoursCappedNotice.value = draft.hours > MAX_HOURS ? OVER_CAP_NOTICE : null
       return
     }
     state.value.workPackageId = undefined
     state.value.hours = DEFAULT_HOURS
     state.value.comment = ''
+    hoursCappedNotice.value = null
   }
 )
 
@@ -280,26 +277,51 @@ watch(
   { immediate: true }
 )
 
+/** The message shown when the entry's hours sit above the cap. */
+const OVER_CAP_NOTICE = `A single entry can't exceed ${MAX_HOURS} hours.`
+
 /**
- * Set when a typed value was above the cap, so the correction is announced
- * instead of the number quietly changing under the user.
+ * Set when the hours are above the cap, so the correction is announced instead
+ * of the number quietly changing under the user. Two ways in: an entry loaded
+ * from OpenProject that is already longer than a working day, and `onSubmit`'s
+ * last-gate clamp.
  */
 const hoursCappedNotice = ref<string | null>(null)
 
 /**
- * Apply the cap to what was *typed*, on leaving the field. Reads the input's
- * text because `state.hours` still holds the previous value here — this runs
- * before the component commits, its own clamp being registered after ours on
- * the same element. Belt and braces with the schema's `max`.
+ * Set the hours, from the slider or an anchor. Clears the cap notice: the value
+ * the user just chose is the one on screen, so a warning about an earlier one is
+ * stale.
  */
-function onHoursBlur(event: FocusEvent): void {
-  const el = event.target as HTMLInputElement | null
-  const typed = parseTypedHours(el?.value ?? '')
-  if (typed === null) return
-  const capped = clampEntryHours(typed, maxHours.value)
-  hoursCappedNotice.value =
-    capped === typed ? null : `A single entry can't exceed ${maxHours.value} hours.`
-  state.value.hours = capped
+function setHours(value: number): void {
+  hoursCappedNotice.value = null
+  state.value.hours = value
+}
+
+/**
+ * The marks under the track: the floor, then every whole hour to the cap. Most
+ * entries land on one, so they double as one-click shortcuts.
+ *
+ * The floor earns a mark of its own — it's where the thumb bottoms out, and a
+ * quarter hour is the smallest slice that can be logged, so it's worth naming
+ * rather than leaving as an unlabelled end of the track.
+ *
+ * A constant, not a computed: one cap in both modes means one set of marks.
+ */
+const HOUR_ANCHORS: number[] = [
+  HOURS_MIN,
+  ...Array.from({ length: MAX_HOURS }, (_, i) => i + 1)
+]
+
+/**
+ * Where an anchor sits along the track, as a percentage.
+ *
+ * Measured across `[HOURS_MIN, MAX_HOURS]` rather than `[0, MAX_HOURS]` because
+ * that's the range the thumb travels — anchoring against 0 would drift every
+ * mark left of the value it names.
+ */
+function anchorPercent(hours: number): number {
+  return ((hours - HOURS_MIN) / (MAX_HOURS - HOURS_MIN)) * 100
 }
 
 /** Nothing to pick → the select stays disabled whatever the reason. */
@@ -360,9 +382,9 @@ async function onSubmit(event: { data: FormState }): Promise<void> {
   // so this should be unreachable — it exists because a value above the cap was
   // reported reaching the server, and an entry with the wrong hours is not the
   // kind of bug that should depend on one layer behaving.
-  const hours = clampEntryHours(event.data.hours, maxHours.value)
+  const hours = clampEntryHours(event.data.hours, MAX_HOURS)
   if (hours !== event.data.hours) {
-    hoursCappedNotice.value = `A single entry can't exceed ${maxHours.value} hours.`
+    hoursCappedNotice.value = OVER_CAP_NOTICE
     state.value.hours = hours
     return
   }
@@ -431,48 +453,54 @@ async function onSubmit(event: { data: FormState }): Promise<void> {
     class="flex flex-col gap-4"
     @submit="onSubmit"
   >
-    <UFormField name="workPackageId">
-      <USelectMenu
-        v-model="state.workPackageId"
-        v-model:search-term="workPackageSearch"
-        :items="workPackageItems"
-        value-key="value"
-        :loading="workPackagesLoading"
-        :disabled="locked"
-        icon="i-lucide-package"
-        placeholder="Select a work package"
-        aria-label="Work package"
-        :search-input="searchInputProps"
-        :ignore-filter="isServerSearchActive"
-        class="w-full"
-      >
-        <!-- The default empty text ("No matching data") reads as "no such work
-             package" while a search is still in flight, so say which it is. -->
-        <template #empty>
-          <span v-if="workPackagesLoading">Searching…</span>
-          <span v-else-if="workPackageSearch">
-            No work package matches “{{ workPackageSearch }}”.
-          </span>
-          <span v-else>No work packages.</span>
-        </template>
-      </USelectMenu>
-      <template v-if="workPackagesError || workPackageSearchError" #help>
-        <span class="text-error">
-          {{
-            workPackagesError
-              ? "Couldn't load your work packages."
-              : "Couldn't search work packages."
-          }}
-        </span>
-      </template>
-    </UFormField>
-
+    <!-- Work package and activity share the top row: the activity is a scope for
+         the item beside it rather than a field of its own standing, so they read
+         as one choice — and pairing them leaves the whole width below for the
+         slider. -->
     <div class="flex items-start gap-3">
-      <!-- Activity absorbs what's left rather than claiming the row: its values
-           are single words ("Development", "Management"), so past ~24rem the
-           extra width is empty space taken from the hours field beside it.
-           `min-w-0` so a long activity name truncates instead of pushing. -->
-      <UFormField name="activityId" class="min-w-0 flex-1">
+      <UFormField name="workPackageId" class="min-w-0 flex-1">
+        <USelectMenu
+          v-model="state.workPackageId"
+          v-model:search-term="workPackageSearch"
+          :items="workPackageItems"
+          value-key="value"
+          :loading="workPackagesLoading"
+          :disabled="locked"
+          icon="i-lucide-package"
+          placeholder="Select a work package"
+          aria-label="Work package"
+          :search-input="searchInputProps"
+          :ignore-filter="isServerSearchActive"
+          class="w-full"
+        >
+          <!-- The default empty text ("No matching data") reads as "no such work
+               package" while a search is still in flight, so say which it is. -->
+          <template #empty>
+            <span v-if="workPackagesLoading">Searching…</span>
+            <span v-else-if="workPackageSearch">
+              No work package matches “{{ workPackageSearch }}”.
+            </span>
+            <span v-else>No work packages.</span>
+          </template>
+        </USelectMenu>
+        <template v-if="workPackagesError || workPackageSearchError" #help>
+          <span class="text-error">
+            {{
+              workPackagesError
+                ? "Couldn't load your work packages."
+                : "Couldn't search work packages."
+            }}
+          </span>
+        </template>
+      </UFormField>
+
+      <!-- A quarter of the row. Activity values are single words
+           ("Development", "Management") drawn from a short project-scoped list,
+           so they need far less room than a work-package subject; `min-w-0` lets
+           a long one truncate instead of pushing the item beside it. The
+           placeholder is "Activity" rather than "Select an activity" because at
+           this width the longer form truncates mid-word. -->
+      <UFormField name="activityId" class="min-w-0 basis-1/4">
         <USelectMenu
           v-model="state.activityId"
           :items="activityItems"
@@ -480,37 +508,74 @@ async function onSubmit(event: { data: FormState }): Promise<void> {
           :loading="activitiesLoading"
           :disabled="locked || hasNoActivityOptions"
           icon="i-lucide-tag"
-          placeholder="Select an activity"
+          placeholder="Activity"
           aria-label="Activity"
           class="w-full"
         />
       </UFormField>
-
-      <!-- The only field whose value says nothing about itself: a select shows
-           its placeholder, the textarea its prompt, but a bare `1` needs
-           naming. Horizontal so the row stays one line — `orientation` is the
-           component's own prop, not a hand-rolled flex wrapper. The label is
-           bound to the input by `for`/`id`, so it replaces the `aria-label`
-           rather than doubling it. -->
-      <UFormField
-        name="hours"
-        label="Hours"
-        orientation="horizontal"
-        class="basis-56 shrink-0"
-        :ui="{ container: 'flex-1' }"
-      >
-        <UInputNumber
-          v-model="state.hours"
-          :min="0.25"
-          :max="maxHours"
-          :step="0.25"
-          :disabled="locked"
-          class="w-full"
-          @blur="onHoursBlur"
-          @focus="hoursCappedNotice = null"
-        />
-      </UFormField>
     </div>
+
+    <!-- Its own row, the full width of the form: the track is the one control
+         here that gets better the wider it is, a quarter-hour being ~3% of it.
+         A slider shows no number of its own, so the label row carries the value —
+         that's what the `hint` slot is for, keeping the figure on the same line
+         as the word it belongs to. -->
+    <UFormField name="hours" label="Hours">
+      <template #hint>
+        <!-- The entry's real hours, which is not always the thumb's position:
+             an entry that arrived above the cap keeps its figure here while the
+             thumb pins to the end of the track. `text-warning` marks that gap,
+             and the notice under the form says what it means. -->
+        <span
+          class="font-medium tabular-nums"
+          :class="state.hours > MAX_HOURS ? 'text-warning' : 'text-highlighted'"
+        >
+          {{ state.hours }}h
+        </span>
+      </template>
+
+      <!-- `HOURS_MIN` rather than 0 as the floor: the track then can't offer a
+           value the schema's `.positive()` would reject, and `MAX_HOURS` caps it
+           in both modes (no task exceeds a working day). The bound value is
+           clamped for display only — an over-cap entry must not have its hours
+           rewritten just by being opened. -->
+      <USlider
+        :model-value="Math.min(state.hours, MAX_HOURS)"
+        :min="HOURS_MIN"
+        :max="MAX_HOURS"
+        :step="0.25"
+        :disabled="locked"
+        tooltip
+        class="mt-2"
+        @update:model-value="(value) => setHours(Number(value))"
+      />
+
+      <!-- Whole-hour anchors. Inset by half the thumb (`size-4` → `mx-2`) so a
+           tick centre and a thumb centre agree at both ends of the track,
+           which a plain 0–100% row doesn't. -->
+      <div class="relative mx-2 mt-1.5 h-5">
+        <button
+          v-for="anchor in HOUR_ANCHORS"
+          :key="anchor"
+          type="button"
+          class="absolute top-0 flex -translate-x-1/2 cursor-pointer flex-col items-center gap-1 rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed"
+          :class="
+            state.hours === anchor
+              ? 'text-primary'
+              : 'text-dimmed hover:text-highlighted'
+          "
+          :style="{ left: `${anchorPercent(anchor)}%` }"
+          :disabled="locked"
+          :aria-label="`Set hours to ${anchor}`"
+          @click="setHours(anchor)"
+        >
+          <span class="bg-accented h-1 w-px" />
+          <span class="text-[10px] leading-none tabular-nums">
+            {{ anchor }}
+          </span>
+        </button>
+      </div>
+    </UFormField>
 
     <UFormField name="comment">
       <UTextarea
