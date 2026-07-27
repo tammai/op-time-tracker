@@ -1,21 +1,23 @@
 #!/usr/bin/env node
 /**
- * Draw the app icon and build `build/icon.icns` from it.
+ * Draw the app icon and build `build/icon.icns` and `build/icon.ico` from it.
  *
  * Procedural on purpose: the repo has no artwork and no image dependency, and
  * adding one (sharp, canvas — both native) to draw a clock face would be a
  * heavier price than the ~100 lines below. `zlib` is all a PNG needs.
  *
- * The committed outputs (`build/icon.png`, `build/icon.icns`) are what
- * packaging reads, so this script is only run when the artwork changes:
+ * The committed outputs (`build/icon.png`, `build/icon.icns`, `build/icon.ico`)
+ * are what packaging reads, so this script is only run when the artwork changes:
  *
  *     node tools/make-icons.mjs
  *
- * Replacing the placeholder with real artwork means overwriting those two files
- * (`iconutil -c icns <name>.iconset`) and deleting this script — not editing it.
+ * Replacing the placeholder with real artwork means overwriting those three
+ * files (`iconutil -c icns <name>.iconset`) and deleting this script — not
+ * editing it.
  *
- * macOS only: `iconutil` ships with Xcode's command line tools. The PNGs are
- * written regardless, so a non-mac run still leaves usable output.
+ * The `.icns` step is macOS only: `iconutil` ships with Xcode's command line
+ * tools. The PNG and the ICO are written regardless, so a non-mac run still
+ * leaves usable output.
  */
 import { deflateSync } from 'node:zlib'
 import { execFileSync } from 'node:child_process'
@@ -182,6 +184,49 @@ function encodePng(size, pixels) {
 }
 
 // ---------------------------------------------------------------------------
+// ICO encoding — a directory of PNGs
+// ---------------------------------------------------------------------------
+
+/**
+ * Pack already-encoded PNGs into an `.ico`, largest first.
+ *
+ * An ICO entry may hold either a BMP or, since Vista, a whole PNG file — so the
+ * bitmaps rendered above go in verbatim and nothing needs re-encoding. Windows
+ * picks the entry matching the surface it's drawing (16px in the taskbar, 256px
+ * in the installer), which is why every size is listed rather than just 256.
+ *
+ * @param {Array<[number, Buffer]>} entries `[edge, png]` pairs
+ */
+function encodeIco(entries) {
+  const sorted = [...entries].sort((a, b) => b[0] - a[0])
+
+  const header = Buffer.alloc(6)
+  header.writeUInt16LE(0, 0) // reserved
+  header.writeUInt16LE(1, 2) // type: 1 = icon
+  header.writeUInt16LE(sorted.length, 4)
+
+  // Image data starts after the header and one 16-byte entry per image.
+  let offset = 6 + sorted.length * 16
+  const directory = []
+  for (const [size, png] of sorted) {
+    const entry = Buffer.alloc(16)
+    // 256 is stored as 0 — the field is one byte and 256 doesn't fit.
+    entry[0] = size >= 256 ? 0 : size
+    entry[1] = size >= 256 ? 0 : size
+    entry[2] = 0 // palette size: 0 = truecolour
+    entry[3] = 0 // reserved
+    entry.writeUInt16LE(1, 4) // colour planes
+    entry.writeUInt16LE(32, 6) // bits per pixel
+    entry.writeUInt32LE(png.length, 8)
+    entry.writeUInt32LE(offset, 12)
+    directory.push(entry)
+    offset += png.length
+  }
+
+  return Buffer.concat([header, ...directory, ...sorted.map(([, png]) => png)])
+}
+
+// ---------------------------------------------------------------------------
 // Output
 // ---------------------------------------------------------------------------
 
@@ -209,9 +254,21 @@ for (const [size, name] of ICONSET) {
   writeFileSync(join(ICONSET_DIR, name), rendered.get(size))
 }
 
-// Kept alongside the .icns for Windows/Linux targets, which take a PNG.
+// Kept alongside the .icns for Linux targets, which take a PNG.
 writeFileSync(join(BUILD_DIR, 'icon.png'), rendered.get(1024))
 console.log('wrote build/icon.png (1024×1024)')
+
+// Windows. 24 and 48 aren't macOS sizes, so they're rendered here rather than
+// picked out of the cache; the rest are already drawn.
+const ICO_SIZES = [16, 24, 32, 48, 64, 128, 256]
+for (const size of ICO_SIZES) {
+  if (!rendered.has(size)) rendered.set(size, encodePng(size, render(size)))
+}
+writeFileSync(
+  join(BUILD_DIR, 'icon.ico'),
+  encodeIco(ICO_SIZES.map(size => [size, rendered.get(size)]))
+)
+console.log(`wrote build/icon.ico (${ICO_SIZES.join(', ')})`)
 
 try {
   execFileSync('iconutil', ['-c', 'icns', ICONSET_DIR, '-o', join(BUILD_DIR, 'icon.icns')])

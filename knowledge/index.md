@@ -20,7 +20,7 @@ Root map of everything under `knowledge/`. Read this before non-trivial changes.
 - [OpenProject Response Shapes](/domains/openproject-response-shapes.md) — how HAL+JSON responses vary in practice (null link hrefs, duration strings) and why the Zod schemas are strict only on fields the UI reads
 
 ## Playbooks
-- [Packaging for Distribution](/playbooks/packaging-distribution.md) — `pnpm dist` builds an unsigned macOS universal DMG; why renderer libs must stay in `devDependencies`, and what signing would change
+- [Packaging for Distribution](/playbooks/packaging-distribution.md) — unsigned macOS universal DMG + Windows x64 installer, released from CI on a tag; why renderer libs must stay in `devDependencies`, and what signing would change
 
 ## Constraints
 - [Agent Rules](/constraints/agent-rules.md) — what agents must check before touching IPC handlers, credentials, or security-sensitive code

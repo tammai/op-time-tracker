@@ -1,11 +1,13 @@
 # electron-builder — packaging for distribution.
 #
-# macOS only, universal (arm64 + Intel in one bundle), unsigned. See
-# `knowledge/playbooks/packaging-distribution.md` for the trade-offs and what to
-# change when a Developer ID becomes available.
+# macOS universal (arm64 + Intel in one bundle) and Windows x64, both unsigned.
+# See `knowledge/playbooks/packaging-distribution.md` for the trade-offs and what
+# to change when signing certificates become available.
 #
-# Run via `pnpm dist` (which builds first — electron-builder packages `out/`,
-# it does not compile it).
+# Run via `pnpm dist:mac` / `pnpm dist:win` (each builds first — electron-builder
+# packages `out/`, it does not compile it). Windows must be packaged **on**
+# Windows: cross-building NSIS from macOS needs wine and is unreliable, so
+# `.github/workflows/release.yml` runs that half on a `windows-latest` runner.
 
 appId: vn.bigin.op-time-tracker
 productName: OP Time Tracker
@@ -53,3 +55,28 @@ mac:
 
 dmg:
   artifactName: ${productName}-${version}-universal.${ext}
+
+win:
+  target:
+    - target: nsis
+      arch: x64
+  # `iconutil` output is mac-only; Windows takes the .ico that
+  # `pnpm icons` writes beside it. Naming it explicitly beats letting
+  # electron-builder downscale icon.png, which smears the 16px taskbar icon.
+  icon: build/icon.ico
+  # Unsigned, for the same reason as macOS — no code-signing certificate. The
+  # cost here is SmartScreen, which warns on first run until the binary earns
+  # reputation; see the README for what recipients do.
+  artifactName: ${productName}-${version}-x64-setup.${ext}
+
+nsis:
+  # A real installer wizard rather than electron-builder's one-click default:
+  # `oneClick: true` installs and launches with no confirmation, which reads as
+  # malware-ish for an unsigned download the recipient was already warned about.
+  oneClick: false
+  # Per-user (%LOCALAPPDATA%), so no UAC elevation prompt — the team can install
+  # without local admin.
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true

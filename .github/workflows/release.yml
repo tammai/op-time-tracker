@@ -1,0 +1,122 @@
+# Builds the macOS and Windows artifacts on a version tag and attaches them to a
+# draft GitHub Release.
+#
+# Windows has to be packaged on Windows — cross-building NSIS from macOS needs
+# wine and is unreliable — so the two halves run on their own runners and each
+# uploads straight to the release. Uploads use the `gh` CLI (preinstalled on
+# every runner) rather than a third-party action, which keeps the supply chain
+# to the three actions CI already pins.
+#
+# To cut a release: bump `version` in package.json, commit, then
+#   git tag v1.0.2 && git push origin v1.0.2
+# Review the draft on GitHub, write the notes, hit Publish.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # Re-run a failed build without re-tagging: pick the tag as the ref in the UI.
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  # Creates the (empty) draft up front so both build jobs have something to
+  # upload to — two jobs racing to create the same release would conflict.
+  draft:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Require a tag ref
+        run: |
+          if [ "${{ github.ref_type }}" != "tag" ]; then
+            echo "::error::This workflow must run on a tag (got ${{ github.ref }})."
+            exit 1
+          fi
+
+      # A tag that disagrees with package.json produces artifacts whose
+      # filenames don't match the release — cheaper to catch here than after
+      # two platform builds.
+      - name: Tag must match package.json version
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$pkg" != "$tag" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $pkg."
+            exit 1
+          fi
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Draft $GITHUB_REF_NAME already exists — reusing it."
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --draft \
+              --title "OP Time Tracker $GITHUB_REF_NAME" \
+              --notes "Unsigned builds. macOS: right-click → Open on first launch. Windows: More info → Run anyway at the SmartScreen prompt. Verify against the SHA256SUMS files below."
+          fi
+
+  build:
+    needs: draft
+    strategy:
+      # One platform failing shouldn't discard a good build of the other — the
+      # draft keeps whatever landed and the failed half can be re-run.
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: macos
+            builder_flag: '--mac'
+            artifacts: 'release/*.dmg release/*.zip'
+            sha_cmd: 'shasum -a 256'
+          - os: windows-latest
+            name: windows
+            builder_flag: '--win'
+            artifacts: 'release/*.exe'
+            sha_cmd: 'sha256sum'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          # 22, not CI's 20 — `engines.node` requires it and the shipped binary
+          # should be built on the version we support.
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Package
+        # `pnpm build` first: electron-builder packages `out/`, it doesn't
+        # compile it.
+        run: pnpm build && pnpm exec electron-builder ${{ matrix.builder_flag }}
+        env:
+          # Both platforms ship unsigned. Without this, electron-builder hunts
+          # the runner keychain for an identity and the failure mode is a
+          # confusing signing error rather than an unsigned artifact.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      # Recipients can't verify an unsigned binary's origin, so the checksum is
+      # the only integrity handle they get. Published with the artifacts.
+      - name: Checksums
+        shell: bash
+        run: ${{ matrix.sha_cmd }} ${{ matrix.artifacts }} > "release/SHA256SUMS-${{ matrix.name }}.txt"
+
+      - name: Upload to draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # --clobber so a re-run replaces its own artifacts instead of erroring.
+        run: gh release upload "$GITHUB_REF_NAME" ${{ matrix.artifacts }} "release/SHA256SUMS-${{ matrix.name }}.txt" --clobber

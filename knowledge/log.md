@@ -8,6 +8,9 @@ timestamp: 2026-07-21T00:00:00Z
 
 # Knowledge Bundle Log
 
+## 2026-07-27 (windows + releases)
+Distribution went cross-platform and moved to CI. Windows x64 NSIS installer added (`win`/`nsis` in `electron-builder.yml`, per-user so no admin prompt), `tools/make-icons.mjs` now also writes `build/icon.ico`, and `pnpm dist` split into `dist:mac`/`dist:win`. Windows can't be cross-built from macOS, so `.github/workflows/release.yml` builds each platform on its own runner on a `v*` tag and both upload into one draft GitHub Release via `gh`. Unsigned on both sides now, so the release carries `SHA256SUMS-*.txt` — recorded in `playbooks/packaging-distribution.md` with the SmartScreen trade-off alongside the existing Gatekeeper one.
+
 ## 2026-07-26 (packaging)
 The app became distributable: `electron-builder` producing an unsigned macOS universal DMG + zip via `pnpm dist`, version 1.0.0, generated placeholder icon (`tools/make-icons.mjs`, pure Node PNG + `iconutil`). Packaging exposed that every renderer library sat in `dependencies`, so electron-builder shipped Vite's own toolchain inside the app and the universal merge failed on an `@esbuild` binary — they belong in `devDependencies`, leaving `electron-store` + `zod` as the only runtime deps. Recorded in `playbooks/packaging-distribution.md` along with the unsigned-integrity trade-off and the signing path.
 

@@ -22,8 +22,10 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "dist": "electron-vite build && electron-builder --mac",
-    "dist:dir": "electron-vite build && electron-builder --mac --dir",
+    "dist": "electron-vite build && electron-builder",
+    "dist:mac": "electron-vite build && electron-builder --mac",
+    "dist:win": "electron-vite build && electron-builder --win",
+    "dist:dir": "electron-vite build && electron-builder --dir",
     "icons": "node tools/make-icons.mjs",
     "type-check": "vue-tsc --noEmit -p tsconfig.node.json && vue-tsc --noEmit -p tsconfig.web.json && vue-tsc --noEmit -p tsconfig.test.json",
     "type-check:tests": "vue-tsc --noEmit -p tsconfig.test.json",
