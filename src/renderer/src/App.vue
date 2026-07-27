@@ -58,7 +58,11 @@ function onDisconnected(): void {
 </script>
 
 <template>
-  <UApp>
+  <!-- Toasts here are short confirmations of a write the user just made — the
+       result is already visible in the list behind them, so Nuxt UI's 5s
+       default outstays its welcome. Set once on the toaster rather than per
+       `toast.add()` call, so every site stays consistent. -->
+  <UApp :toaster="{ duration: 3000 }">
     <!-- Loading: avoid flashing onboarding before hasCredentials() resolves. -->
     <div
       v-if="gate === 'loading'"
