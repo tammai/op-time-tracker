@@ -8,6 +8,12 @@ function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1024,
     height: 768,
+    // The floor the renderer is built for. Below ~800 the day modal (`max-w-2xl`)
+    // stops fitting its own width, so the work package and activity selects
+    // sharing a row squeeze to unreadable; below ~600 the seven-column grid
+    // loses the row height a day's entries need. Resizing stays free above it.
+    minWidth: 800,
+    minHeight: 600,
     show: false,
     autoHideMenuBar: true,
     webPreferences: {
