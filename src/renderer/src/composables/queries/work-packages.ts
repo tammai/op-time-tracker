@@ -32,6 +32,28 @@ import { statusQueries } from './statuses'
  */
 
 /**
+ * Cap on a title search's results.
+ *
+ * A substring search can match a large slice of an instance, and the picker
+ * shows a scrollable dropdown with no pagination — past a screenful or two,
+ * more rows don't help anyone find their item. Smaller than the priority
+ * list's page size on purpose: that list is the user's own finite workload,
+ * this one is an open-ended query.
+ */
+const SEARCH_PAGE_SIZE = 50
+
+/**
+ * Ordering for a title search.
+ *
+ * OpenProject has no relevance ranking for `subjectOrId`, and its default is
+ * `id asc` — creation order. Paired with a capped page that is the worst
+ * possible choice: a common term shows the 50 *oldest* matches, which is where
+ * a recently-assigned ticket is least likely to be. Most-recently-updated is
+ * the closest available proxy for "the one they mean".
+ */
+const SEARCH_SORT: Array<[string, 'asc' | 'desc']> = [['updatedAt', 'desc']]
+
+/**
  * Query options for the work packages list. The key includes the full
  * `filters` object so distinct pagination offsets / page sizes cache
  * separately and don't collide across pages.
@@ -49,19 +71,26 @@ export const workPackageQueries = {
   })),
 
   /**
-   * Search by work-package id **prefix**, for the picker's search box. The
-   * main process resolves it by fetching the candidate ids directly (see
-   * `searchWorkPackagesByIdPrefix`), so there is no pagination to pass and no
-   * assignee/status narrowing — the point is to reach items the priority list
-   * doesn't include.
+   * Search by work-package **title**, for the picker's search box. Sent
+   * without assignee/status narrowing — the point is to reach items the
+   * priority list doesn't include, so narrowing it to the user's own work
+   * would defeat the purpose.
    *
-   * Keyed on the term, so each one caches separately and re-typing a term is
-   * free. `term` must already be a valid `WorkPackageSearchTermSchema` value;
-   * callers gate on `enabled` rather than passing a partial term.
+   * Keyed on the term, so each one caches separately and backtracking over a
+   * term already typed is free. `term` must already be a valid
+   * `WorkPackageSearchTermSchema` value; callers gate on `enabled` rather than
+   * passing a partial term.
    */
   search: defineQueryOptions((term: string) => ({
     key: ['work-packages', 'search', term],
-    query: () => window.openproject.listWorkPackages({ filters: { search: term } })
+    query: () =>
+      window.openproject.listWorkPackages({
+        filters: {
+          search: term,
+          pageSize: SEARCH_PAGE_SIZE,
+          sortBy: SEARCH_SORT
+        }
+      })
   }))
 }
 

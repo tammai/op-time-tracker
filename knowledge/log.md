@@ -8,6 +8,9 @@ timestamp: 2026-07-21T00:00:00Z
 
 # Knowledge Bundle Log
 
+## 2026-07-27 (title search)
+The picker searches by **title**, local before remote: the preloaded priority list is filtered by subject substring, and only a term matching none of it reaches the server (300ms debounce, skipped on a cache hit) as `subjectOrId **`. That operator matches an id exactly, so a pasted `#12345` still resolves — and the whole id-prefix fan-out (`expandWorkPackageIdPrefix`, `searchWorkPackagesByIdPrefix`, one `GET /work_packages/{id}` per candidate) is deleted, taking with it the only path where renderer input reached a URL *path*. Review caught three things the pure-util tests structurally could not: `#12345` matching nothing once the sanitizer stopped stripping non-digits, an always-on `ignore-filter` letting the unshifted selection mask the empty state, and a failed request reading as "no work package matches". Hence `tests/renderer/composables/` — a Colada harness built on `createApp` + `effectScope` with no DOM and no new dependency. `domains/openproject-response-shapes.md` records the three `subjectOrId` consequences and the local-hit-hides-the-instance trade-off.
+
 ## 2026-07-27 (windows + releases)
 Distribution went cross-platform and moved to CI. Windows x64 NSIS installer added (`win`/`nsis` in `electron-builder.yml`, per-user so no admin prompt), `tools/make-icons.mjs` now also writes `build/icon.ico`, and `pnpm dist` split into `dist:mac`/`dist:win`. Windows can't be cross-built from macOS, so `.github/workflows/release.yml` builds each platform on its own runner on a `v*` tag and both upload into one draft GitHub Release via `gh`. Unsigned on both sides now, so the release carries `SHA256SUMS-*.txt` — recorded in `playbooks/packaging-distribution.md` with the SmartScreen trade-off alongside the existing Gatekeeper one.
 

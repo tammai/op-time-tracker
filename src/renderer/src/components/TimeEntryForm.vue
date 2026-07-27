@@ -9,8 +9,8 @@ import { z } from 'zod'
 
 import { useWorkPackagePicker } from '@renderer/composables/useWorkPackagePicker'
 import {
-  WORK_PACKAGE_SEARCH_MAX_DIGITS,
-  WORK_PACKAGE_SEARCH_MIN_DIGITS
+  WORK_PACKAGE_SEARCH_MAX_CHARS,
+  WORK_PACKAGE_SEARCH_MIN_CHARS
 } from '@shared/validation/work-package-search'
 import { timeEntryActivityQueries } from '@renderer/composables/queries/time-entry-activities'
 import {
@@ -155,9 +155,8 @@ const saveError = ref<{ code: string; message: string } | null>(null)
  * "log time against that same item" form. The activity follows, since the
  * activity watch reselects whenever the work package changes.
  *
- * Logging a second entry against the same item is still quick — that's the
- * reset in `onSubmit`, which deliberately keeps the work package after a
- * *create*, where the user did pick it.
+ * A successful *create* clears the same four fields, in `onSubmit` — once an
+ * entry is logged, nothing about it should still be sitting in the form.
  */
 watch(
   () => props.draft,
@@ -188,15 +187,20 @@ watch(
 // Work packages — the select's options.
 // ---------------------------------------------------------------------------
 
-// Suggestions are the user's priority items; typing a full id searches the
-// whole instance and replaces them. See `useWorkPackagePicker`.
+// Suggestions are the user's priority items, narrowed by title as you type;
+// a term none of them match is searched instance-wide. See
+// `useWorkPackagePicker`.
 // The edited entry's item is rarely in the suggestions, and the select can
 // only label an option it holds — so hand it the subject the entry already
 // carries, or the trigger reads as a bare `#12345`.
 const {
   items: workPackageItems,
   searchTerm: workPackageSearch,
-  isServerSearchActive,
+  isSearching: isSearchingWorkPackages,
+  isTermTooShort: isWorkPackageTermTooShort,
+  hasSearchFailed: hasWorkPackageSearchFailed,
+  isSearchTruncated: isWorkPackageSearchTruncated,
+  searchTotal: workPackageSearchTotal,
   isLoading: workPackagesLoading,
   error: workPackagesError,
   searchError: workPackageSearchError
@@ -209,28 +213,20 @@ const {
 })
 
 /**
- * "5 digits" while the minimum equals the cap, "4–5 digits" if the minimum is
- * ever lowered — a hardcoded range would read "5–5 digits" today.
- */
-const searchPlaceholder = computed(() =>
-  WORK_PACKAGE_SEARCH_MIN_DIGITS === WORK_PACKAGE_SEARCH_MAX_DIGITS
-    ? `Search by ID (${WORK_PACKAGE_SEARCH_MAX_DIGITS} digits)…`
-    : `Search by ID (${WORK_PACKAGE_SEARCH_MIN_DIGITS}–${WORK_PACKAGE_SEARCH_MAX_DIGITS} digits)…`
-)
-
-/**
  * Props for the select's search box. Not inline in the template: `InputProps`
- * marks its `InputHTMLAttributes` base `@vue-ignore`, so `inputmode` and
- * `maxlength` are missing from the resolved prop type though the `<input>`
- * still honours them. Excess property checking only fires on fresh literals,
- * so passing a variable keeps the behaviour without a cast.
+ * marks its `InputHTMLAttributes` base `@vue-ignore`, so `maxlength` is
+ * missing from the resolved prop type though the `<input>` still honours it.
+ * Excess property checking only fires on fresh literals, so passing a variable
+ * keeps the behaviour without a cast.
+ *
+ * No `inputmode: 'numeric'` any more — the term is a title, and a numeric
+ * keypad would be the wrong keyboard for it.
  */
-const searchInputProps = computed(() => ({
-  placeholder: searchPlaceholder.value,
+const searchInputProps = {
+  placeholder: 'Search by title…',
   icon: 'i-lucide-search',
-  inputmode: 'numeric',
-  maxlength: WORK_PACKAGE_SEARCH_MAX_DIGITS
-}))
+  maxlength: WORK_PACKAGE_SEARCH_MAX_CHARS
+}
 
 // ---------------------------------------------------------------------------
 // Activities — required by OpenProject, scoped to the selected work package.
@@ -438,12 +434,22 @@ async function onSubmit(event: { data: FormState }): Promise<void> {
         icon: 'i-lucide-check-circle',
         color: 'success'
       })
-      // Keep the work package + activity so logging a second entry against
-      // the same item is quick; reset only what's entry-specific. In edit
-      // mode the parent clears `draft` instead, which resets these via the
-      // watch above.
+      // Back to an empty form: the entry is logged, so nothing about it should
+      // still be sitting in the fields. `activityId` is cleared explicitly
+      // rather than left to the activity watch — that watch only reacts once
+      // the activities query has re-settled for the now-undefined work
+      // package, which would leave a stale activity visible in between.
+      // In edit mode the parent clears `draft` instead, which resets these via
+      // the watch above.
+      state.value.workPackageId = undefined
+      state.value.activityId = undefined
       state.value.hours = DEFAULT_HOURS
       state.value.comment = ''
+      hoursCappedNotice.value = null
+      // Normally already empty — the select clears its own term on select —
+      // but not if the user typed a term and picked nothing, which would
+      // leave the next entry's suggestions narrowed by a stale search.
+      workPackageSearch.value = ''
     }
     emit('saved')
   } catch (e) {
@@ -484,26 +490,57 @@ async function onSubmit(event: { data: FormState }): Promise<void> {
           placeholder="Select a work package"
           aria-label="Work package"
           :search-input="searchInputProps"
-          :ignore-filter="isServerSearchActive"
+          ignore-filter
           class="w-full"
         >
+          <!-- `ignore-filter`: the picker composable already filtered these,
+               locally or server-side. Letting the select filter again would
+               re-test server results against its own fuzzy rules and drop rows
+               that legitimately matched the subject. -->
           <!-- The default empty text ("No matching data") reads as "no such work
                package" while a search is still in flight, so say which it is. -->
           <template #empty>
-            <span v-if="workPackagesLoading">Searching…</span>
+            <span v-if="isSearchingWorkPackages || workPackagesLoading">
+              Searching…
+            </span>
+            <!-- A failed request is not an answer. Saying "no work package
+                 matches" here would assert something about the whole instance
+                 on the strength of a search that never completed. -->
+            <span v-else-if="hasWorkPackageSearchFailed">
+              Couldn’t search work packages. Check your connection and retry.
+            </span>
+            <!-- Below the minimum nothing was sent, so the only honest thing to
+                 report is what's missing from the term. -->
+            <span v-else-if="isWorkPackageTermTooShort">
+              Keep typing — at least {{ WORK_PACKAGE_SEARCH_MIN_CHARS }}
+              characters to search.
+            </span>
             <span v-else-if="workPackageSearch">
               No work package matches “{{ workPackageSearch }}”.
             </span>
             <span v-else>No work packages.</span>
           </template>
         </USelectMenu>
-        <template v-if="workPackagesError || workPackageSearchError" #help>
-          <span class="text-error">
+        <template
+          v-if="
+            workPackagesError ||
+            workPackageSearchError ||
+            isWorkPackageSearchTruncated
+          "
+          #help
+        >
+          <span v-if="workPackagesError || workPackageSearchError" class="text-error">
             {{
               workPackagesError
                 ? "Couldn't load your work packages."
                 : "Couldn't search work packages."
             }}
+          </span>
+          <!-- Silence here would read as "these are all the matches". The
+               server caps the page, so say what fraction is on screen. -->
+          <span v-else>
+            Showing the first {{ workPackageItems.length }} of
+            {{ workPackageSearchTotal }} matches — refine your search.
           </span>
         </template>
       </UFormField>

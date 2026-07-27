@@ -41,27 +41,34 @@ and `_links.status.title` off a work package.
   rather than fetching the work package — an entry's item is rarely in the
   loaded suggestions, and there is no `getWorkPackage` bridge method.
 
-## Searching by id prefix: two dead ends, then direct fetches
+## Searching by title: local first, then `subjectOrId **`
 
-Both obvious approaches fail, which is why the picker looks the way it does:
+The picker filters its preloaded priority list by subject substring, and only a
+term matching **none** of it reaches the server — debounced 300ms (skipped when
+the term's results are already cached), as
+`filters=[{"subjectOrId":{"operator":"**","values":["…"]}}]`, no
+assignee/status narrowing, `pageSize=50`, `sortBy=[["updatedAt","desc"]]`.
 
-1. **`subjectOrId` with `**` matches an id exactly** (or the digits inside a
-   subject). `1234` finds #1234 and never #12345 — useless for typeahead over a
-   5-digit id space.
-2. **An `id` `=` filter over the enumerated candidate ids returns HTTP 400.**
-   OpenProject validates those values against work packages that exist and are
-   visible, and a prefix necessarily includes ids that don't exist.
+`**` is the quick-search operator: substring on the subject, **exact** on the
+id. Three consequences, each of which has already bitten:
 
-What works: fetch the candidates directly. `searchWorkPackagesByIdPrefix` issues
-one `GET /api/v3/work_packages/{id}` per candidate id, treating 404 as "not a
-hit" and letting every other status propagate.
+- **`#12345` must be normalized to `12345`** (`normalizeWorkPackageSearchTerm`)
+  — it's how the app labels every option, and `**` would match the `#` form
+  against nothing.
+- **`sortBy` is not optional.** The default `id asc` means a capped page of a
+  common term returns the *oldest* matches. The picker also surfaces `total`
+  when it exceeds the page rather than implying it showed everything.
+- **Exactness killed the id-*prefix* search** (`1234` finds #1234, never
+  #12345). The fan-out that worked around it — `expandWorkPackageIdPrefix`,
+  `searchWorkPackagesByIdPrefix`, one `GET /work_packages/{id}` per candidate —
+  is deleted; a search is now an ordinary filtered collection, one round trip,
+  nothing user-authored in a URL path. Still true if you revisit it: an `id` `=`
+  filter over enumerated candidates 400s, because OpenProject validates those
+  values against work packages that exist and are visible.
 
-Because each candidate costs a request, the search minimum
-(`WORK_PACKAGE_SEARCH_MIN_DIGITS`) equals the id length: a search fires only on
-a whole id and resolves in exactly one request.
-`expandWorkPackageIdPrefix` therefore returns a single id today — it's kept
-because it's what makes a shorter minimum viable, at 10× the requests per digit
-dropped (a 4-digit minimum means 11 requests per search).
+**A local hit hides the instance.** A term matching one of your own items never
+loads the others — deliberate, but the first thing to revisit if users report a
+work package they can't find. Merge the sources; don't drop the local pass.
 
 ## Diagnosing the next one
 

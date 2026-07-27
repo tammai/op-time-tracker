@@ -5,7 +5,10 @@ import type { WorkPackage } from '@opentracker/preload'
 import {
   PRIMARY_STATUSES,
   PRIMARY_STATUSES_LOWER,
+  decideWorkPackageSearch,
+  filterWorkPackagesByTerm,
   isPriorityWorkPackage,
+  matchesWorkPackageTerm,
   sortByStatusPriority,
   statusRank
 } from '~~/src/renderer/src/utils/work-package-filter'
@@ -100,3 +103,163 @@ describe('sortByStatusPriority', () => {
   })
 })
 
+
+describe('matchesWorkPackageTerm', () => {
+  const wp = makeWp(12345, 'Auth: fix login redirect', 'In Progress')
+
+  it('matches a substring of the subject, not just a prefix', () => {
+    // Subjects usually lead with a component prefix, so prefix-only matching
+    // would make the most natural search term useless.
+    expect(matchesWorkPackageTerm(wp, 'login')).toBe(true)
+    expect(matchesWorkPackageTerm(wp, 'redirect')).toBe(true)
+    expect(matchesWorkPackageTerm(wp, 'Auth')).toBe(true)
+    expect(matchesWorkPackageTerm(wp, 'fix login')).toBe(true)
+  })
+
+  it('is case-insensitive on both sides', () => {
+    expect(matchesWorkPackageTerm(wp, 'LOGIN')).toBe(true)
+    expect(matchesWorkPackageTerm(wp, 'aUtH')).toBe(true)
+    expect(matchesWorkPackageTerm(makeWp(1, 'UPPER CASE'), 'upper')).toBe(true)
+  })
+
+  it('ignores whitespace around the term', () => {
+    expect(matchesWorkPackageTerm(wp, '  login  ')).toBe(true)
+  })
+
+  it('matches the id exactly, mirroring the server-side subjectOrId filter', () => {
+    expect(matchesWorkPackageTerm(wp, '12345')).toBe(true)
+    // Not a prefix: `12` would otherwise pull in every id starting with those
+    // digits and bury the subject matches.
+    expect(matchesWorkPackageTerm(wp, '123')).toBe(false)
+    expect(matchesWorkPackageTerm(wp, '2345')).toBe(false)
+  })
+
+  it('still matches digits that appear inside the subject', () => {
+    expect(matchesWorkPackageTerm(makeWp(7, 'Bump to v2.5'), '2.5')).toBe(true)
+  })
+
+  it('returns false when the term appears nowhere', () => {
+    expect(matchesWorkPackageTerm(wp, 'payment')).toBe(false)
+  })
+
+  it('treats an empty or whitespace-only term as matching everything', () => {
+    // Clearing the box restores the full suggestion list.
+    expect(matchesWorkPackageTerm(wp, '')).toBe(true)
+    expect(matchesWorkPackageTerm(wp, '   ')).toBe(true)
+  })
+})
+
+describe('filterWorkPackagesByTerm', () => {
+  const list = [
+    makeWp(101, 'Auth: fix login redirect', 'In Progress'),
+    makeWp(102, 'Billing: invoice PDF export', 'To Do'),
+    makeWp(103, 'Auth: add login rate limit', 'To Do')
+  ]
+
+  it('keeps every match, in the input order', () => {
+    expect(filterWorkPackagesByTerm(list, 'login').map((w) => w.id)).toEqual([
+      101, 103
+    ])
+  })
+
+  it('returns [] when nothing matches — the signal to search the server', () => {
+    // An empty local result is precisely what triggers the API call, so this
+    // must be an empty array rather than the unfiltered list.
+    expect(filterWorkPackagesByTerm(list, 'payment gateway')).toEqual([])
+  })
+
+  it('returns everything for an empty term', () => {
+    expect(filterWorkPackagesByTerm(list, '').map((w) => w.id)).toEqual([
+      101, 102, 103
+    ])
+  })
+
+  it('finds an item by its exact id', () => {
+    expect(filterWorkPackagesByTerm(list, '102').map((w) => w.id)).toEqual([102])
+  })
+
+  it('returns a new array and never mutates the Colada-cached input', () => {
+    const originalOrder = list.map((w) => w.id)
+    const out = filterWorkPackagesByTerm(list, 'auth')
+    expect(out).not.toBe(list)
+    expect(list.map((w) => w.id)).toEqual(originalOrder)
+  })
+})
+
+describe('matchesWorkPackageTerm — the `#id` form', () => {
+  const wp = makeWp(12345, 'Auth: fix login redirect', 'In Progress')
+
+  it('matches `#12345`, the exact label the picker renders', () => {
+    // Regression: the free-text sanitizer stopped stripping `#`, which left
+    // the app's own display format matching nothing at all.
+    expect(matchesWorkPackageTerm(wp, '#12345')).toBe(true)
+    expect(matchesWorkPackageTerm(wp, ' #12345 ')).toBe(true)
+  })
+
+  it('does not turn `#` into a wildcard for the wrong id', () => {
+    expect(matchesWorkPackageTerm(wp, '#123')).toBe(false)
+    expect(matchesWorkPackageTerm(wp, '#99999')).toBe(false)
+  })
+
+  it('still treats a non-id `#` term as subject text', () => {
+    expect(matchesWorkPackageTerm(makeWp(1, 'Ship #hashtag support'), '#hashtag')).toBe(
+      true
+    )
+    expect(matchesWorkPackageTerm(wp, '#hashtag')).toBe(false)
+  })
+})
+
+describe('decideWorkPackageSearch', () => {
+  const list = [
+    makeWp(101, 'Auth: fix login redirect', 'In Progress'),
+    makeWp(102, 'Billing: invoice PDF export', 'To Do')
+  ]
+
+  it('answers locally when the priority list matches — never reaching the server', () => {
+    // The invariant the knowledge doc asserts: a term with local hits must
+    // never produce a request.
+    const d = decideWorkPackageSearch(list, 'login')
+    expect(d.mode).toBe('local')
+    expect(d.matches.map((w) => w.id)).toEqual([101])
+  })
+
+  it('answers locally for an empty term, showing the whole list', () => {
+    const d = decideWorkPackageSearch(list, '')
+    expect(d.mode).toBe('local')
+    expect(d.matches).toHaveLength(2)
+  })
+
+  it('escalates to the server only on a local miss', () => {
+    const d = decideWorkPackageSearch(list, 'payment gateway')
+    expect(d.mode).toBe('server')
+    expect(d.matches).toEqual([])
+  })
+
+  it('reports too-short instead of server for a sub-minimum term', () => {
+    // The distinction the UI needs: nothing was sent, so "no work package
+    // matches" would be a claim about the instance that was never checked.
+    expect(decideWorkPackageSearch(list, 'z').mode).toBe('too-short')
+  })
+
+  it('treats `#7` as long enough, since it resolves to an id lookup', () => {
+    expect(decideWorkPackageSearch(list, '#7').mode).toBe('server')
+  })
+
+  it('never escalates while the priority list is still loading', () => {
+    // An unloaded list is empty, so every term would look like a local miss
+    // and fire a request the local pass was about to answer.
+    const d = decideWorkPackageSearch([], 'login', false)
+    expect(d.mode).toBe('local')
+    expect(d.matches).toEqual([])
+  })
+
+  it('does escalate once loaded and genuinely empty', () => {
+    expect(decideWorkPackageSearch([], 'login', true).mode).toBe('server')
+  })
+
+  it('does not mutate the Colada-cached input', () => {
+    const originalOrder = list.map((w) => w.id)
+    decideWorkPackageSearch(list, 'auth')
+    expect(list.map((w) => w.id)).toEqual(originalOrder)
+  })
+})

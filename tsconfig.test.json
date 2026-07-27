@@ -6,7 +6,8 @@
     "src/main/**/*.ts",
     "src/preload/**/*.ts",
     "src/shared/**/*.ts",
-    "src/renderer/src/utils/**/*.ts"
+    "src/renderer/src/utils/**/*.ts",
+    "src/renderer/src/composables/**/*.ts"
   ],
   "exclude": ["tests/fixtures/**"],
   "compilerOptions": {

@@ -4,8 +4,6 @@ import type { Credentials } from '../credentials'
 
 import {
   WorkPackageCollectionSchema,
-  WorkPackageSchema,
-  type WorkPackage,
   type WorkPackageCollection
 } from '../schemas/work-packages'
 import {
@@ -34,7 +32,7 @@ import {
 import { formatDecimalHoursToIso } from '../../shared/utils/time'
 import {
   WorkPackageSearchTermSchema,
-  expandWorkPackageIdPrefix
+  normalizeWorkPackageSearchTerm
 } from '../../shared/validation/work-package-search'
 
 /**
@@ -201,19 +199,41 @@ export interface WorkPackageFilters {
    */
   statuses?: string[]
   /**
-   * Search by work-package id. Resolved by fetching the id directly rather
-   * than by a query filter — see `searchWorkPackagesByIdPrefix` for why
-   * filtering doesn't work. A term shorter than the id length is treated as a
-   * prefix and expanded into candidate ids.
+   * Search by work-package **title**, via OpenProject's `subjectOrId` filter
+   * with the `**` operator: a substring match on the subject, plus an exact
+   * match on the id. Free text — the picker filters its own loaded items
+   * first and only sends a term that matched none of them.
+   *
+   * Combines with `onlyMine`/`statuses`, but the picker deliberately sends it
+   * alone: a search exists to reach work packages *outside* the user's
+   * priority list, so narrowing it by assignee would defeat the point.
    *
    * `listWorkPackages` validates the term against
    * `WorkPackageSearchTermSchema` first, so a renderer can't smuggle an
-   * arbitrary string into the filter JSON.
+   * unbounded string into the filter JSON.
    */
   search?: string
+  /**
+   * Server-side ordering, as `[[field, 'asc' | 'desc'], …]`.
+   *
+   * Worth setting on any search: OpenProject's default is `id asc`, i.e.
+   * creation order, which for a truncated result page means the *oldest*
+   * matches are the ones the user sees.
+   */
+  sortBy?: Array<[string, 'asc' | 'desc']>
   pageSize?: number
   offset?: number
 }
+
+/**
+ * Hard ceiling on `pageSize`, applied in the main process.
+ *
+ * The renderer picks page sizes, and a renderer value is not a trusted value
+ * (`.opencode/rules/security.md`) — an absurd one costs a multi-megabyte
+ * response that this process has to fetch and Zod-parse in full. Comfortably
+ * above every page size the app actually asks for.
+ */
+export const MAX_PAGE_SIZE = 200
 
 /**
  * Filters for `listTimeEntries`. The calendar (task 7) passes
@@ -390,6 +410,19 @@ export function encodeTimeEntryFilters(filters: TimeEntryFilters = {}):
 }
 
 /**
+ * Bound a renderer-supplied `pageSize` to something this process is willing to
+ * fetch and parse: a positive integer, at most {@link MAX_PAGE_SIZE}.
+ *
+ * Clamped rather than rejected — an out-of-range page size is a caller bug or
+ * a hostile renderer, not something the user can act on, and failing the whole
+ * request would turn it into a denial of service of its own.
+ */
+export function clampPageSize(pageSize: number): number {
+  if (!Number.isFinite(pageSize)) return MAX_PAGE_SIZE
+  return Math.min(Math.max(Math.trunc(pageSize), 1), MAX_PAGE_SIZE)
+}
+
+/**
  * Encode `WorkPackageFilters` into query params. Includes pagination + the
  * OpenProject `filters` JSON when `onlyMine` is set.
  */
@@ -399,10 +432,13 @@ export function encodeWorkPackageParams(filters: WorkPackageFilters = {}): Recor
 > {
   const params: Record<string, string> = {}
   if (filters.pageSize !== undefined) {
-    params.pageSize = String(filters.pageSize)
+    params.pageSize = String(clampPageSize(filters.pageSize))
   }
   if (filters.offset !== undefined) {
     params.offset = String(filters.offset)
+  }
+  if (filters.sortBy && filters.sortBy.length > 0) {
+    params.sortBy = JSON.stringify(filters.sortBy)
   }
   // Build the OpenProject filter array for assignee = me + status filter.
   const opFilters: OpenProjectFilter[] = []
@@ -420,12 +456,19 @@ export function encodeWorkPackageParams(filters: WorkPackageFilters = {}): Recor
     // `o` = "status is open" — no values needed (empty array).
     opFilters.push({ status: { operator: 'o', values: [] } })
   }
-  // `filters.search` is deliberately NOT encoded here. An `id =` filter over
-  // enumerated candidate ids is rejected with HTTP 400 — OpenProject validates
-  // the values against work packages that exist and are visible, and a prefix
-  // necessarily includes ids that don't. `listWorkPackages` resolves a search
-  // by fetching the candidate ids directly instead, where a missing id is a
-  // plain 404. See `searchWorkPackagesByIdPrefix`.
+  // `**` on `subjectOrId` is OpenProject's own quick-search operator: it
+  // matches a substring of the subject, and an id exactly. Encoding it here
+  // (rather than resolving it with per-id fetches, as the old id-prefix search
+  // did) means one request answers a search, and the value is percent-encoded
+  // into the query string by `buildRequestUrl` — it never reaches a path.
+  //
+  // Trimmed at the point of use: `listWorkPackages` parses the term through
+  // `WorkPackageSearchTermSchema`, so a caller reaching this directly with a
+  // raw string gets the same shape the picker would have sent.
+  const search = normalizeWorkPackageSearchTerm(filters.search ?? '')
+  if (search !== '') {
+    opFilters.push({ subjectOrId: { operator: '**', values: [search] } })
+  }
   if (opFilters.length > 0) {
     params.filters = JSON.stringify(opFilters)
   }
@@ -442,7 +485,7 @@ export function encodeTimeEntryParams(filters: TimeEntryFilters = {}): Record<
 > {
   const params: Record<string, string> = {}
   if (filters.pageSize !== undefined) {
-    params.pageSize = String(filters.pageSize)
+    params.pageSize = String(clampPageSize(filters.pageSize))
   }
   if (filters.offset !== undefined) {
     params.offset = String(filters.offset)
@@ -561,14 +604,16 @@ export class OpenProjectClient {
   /**
    * `GET /api/v3/work_packages` — returns a Zod-validated collection.
    *
-   * `filters.search` arrives from the renderer, so it is re-validated here
-   * (the renderer's own sanitizing is a UI affordance, not a boundary) and
-   * then resolved by `searchWorkPackagesByIdPrefix` rather than by a query
-   * filter.
+   * `filters.search` arrives from the renderer, so it is re-validated here (the
+   * renderer's own sanitizing is a UI affordance, not a boundary) and the
+   * trimmed result is what reaches the filter JSON. A title search is an
+   * ordinary filtered collection request — one round trip, server-ordered,
+   * whatever the user can see.
    */
   async listWorkPackages(
     filters: WorkPackageFilters = {}
   ): Promise<WorkPackageCollection> {
+    let effective = filters
     if (filters.search !== undefined) {
       const parsed = WorkPackageSearchTermSchema.safeParse(filters.search)
       if (!parsed.success) {
@@ -576,72 +621,12 @@ export class OpenProjectClient {
           parsed.error.issues[0]?.message ?? 'Invalid work package search term.'
         )
       }
-      return this.searchWorkPackagesByIdPrefix(parsed.data)
+      effective = { ...filters, search: parsed.data }
     }
-    const params = encodeWorkPackageParams(filters)
+    const params = encodeWorkPackageParams(effective)
     const url = buildRequestUrl(this.creds.baseUrl, '/api/v3/work_packages', params)
     const body = await this.request(url)
     return this.parseWithSchema(body, WorkPackageCollectionSchema)
-  }
-
-  /**
-   * Resolve an id-prefix search by fetching each candidate id directly, and
-   * return the hits as a synthesized collection.
-   *
-   * Why not a filter: OpenProject's id matching is exact (`subjectOrId` finds
-   * #1234, never #12345), and filtering by the enumerated candidate ids is
-   * rejected with HTTP 400 because it validates those values against work
-   * packages that exist and are visible — a prefix always includes ids that
-   * don't. `GET /api/v3/work_packages/{id}` has no such problem: a missing id
-   * is a 404, which is simply "not a hit".
-   *
-   * Bounded by `expandWorkPackageIdPrefix`. At the current 5-digit minimum a
-   * term is a whole id, so this is a single request; a shorter minimum makes it
-   * a concurrent fan-out of up to 11. Assignee and status are irrelevant here —
-   * fetching by id reaches anything the user can see, which is the point of the
-   * search.
-   *
-   * A 404 is swallowed per id; every other error propagates, so a revoked key
-   * or an unreachable server still surfaces instead of looking like "no
-   * results".
-   */
-  private async searchWorkPackagesByIdPrefix(
-    term: string
-  ): Promise<WorkPackageCollection> {
-    const candidates = expandWorkPackageIdPrefix(term)
-    const settled = await Promise.all(
-      candidates.map((id) => this.fetchWorkPackageOrNull(id))
-    )
-    const elements = settled
-      .filter((wp): wp is WorkPackage => wp !== null)
-      // Ascending id: a prefix search returns an id-space slice, so id order
-      // is the order the user is scanning.
-      .sort((a, b) => a.id - b.id)
-
-    return {
-      _type: 'Collection',
-      total: elements.length,
-      count: elements.length,
-      _embedded: { elements }
-    }
-  }
-
-  /**
-   * `GET /api/v3/work_packages/{id}` — the work package, or `null` when it
-   * doesn't exist.
-   *
-   * `id` is always a digits-only string produced by
-   * `expandWorkPackageIdPrefix` from an already-validated term, so nothing
-   * user-authored reaches the request path (`.opencode/rules/security.md`).
-   */
-  private async fetchWorkPackageOrNull(id: string): Promise<WorkPackage | null> {
-    const url = buildRequestUrl(this.creds.baseUrl, `/api/v3/work_packages/${id}`)
-    try {
-      return this.parseWithSchema(await this.request(url), WorkPackageSchema)
-    } catch (e) {
-      if (e instanceof OpenProjectNotFoundError) return null
-      throw e
-    }
   }
 
   /**

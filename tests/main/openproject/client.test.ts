@@ -5,6 +5,7 @@ import {
   encodeTimeEntryFilters,
   encodeTimeEntryParams,
   encodeWorkPackageParams,
+  MAX_PAGE_SIZE,
   extractApiErrorMessage,
   OpenProjectClient
 } from '~~/src/main/openproject/client'
@@ -281,13 +282,97 @@ describe('encodeWorkPackageParams', () => {
     expect(params.filters).toBeUndefined()
   })
 
-  it('never encodes search as a filter — it is resolved by direct id fetches', () => {
-    // Filtering by enumerated candidate ids is rejected with HTTP 400
-    // (OpenProject validates them against work packages that exist and are
-    // visible), so the search must not reach the query string at all.
-    for (const search of ['1234', '12345', '', 'abcd']) {
+  it('encodes search as a subjectOrId `**` filter', () => {
+    // `**` is OpenProject's quick-search operator: substring on the subject,
+    // exact on the id — which is what keeps a pasted id working now that the
+    // picker searches by title.
+    const params = encodeWorkPackageParams({ search: 'login bug' })
+    const parsed = JSON.parse(params.filters!) as Array<{
+      subjectOrId: { operator: string; values: string[] }
+    }>
+    expect(parsed).toHaveLength(1)
+    expect(parsed[0].subjectOrId.operator).toBe('**')
+    expect(parsed[0].subjectOrId.values).toEqual(['login bug'])
+  })
+
+  it('trims the search term before it reaches the filter value', () => {
+    const params = encodeWorkPackageParams({ search: '  report  ' })
+    const parsed = JSON.parse(params.filters!) as Array<{
+      subjectOrId: { values: string[] }
+    }>
+    expect(parsed[0].subjectOrId.values).toEqual(['report'])
+  })
+
+  it('omits the search filter for an empty or whitespace-only term', () => {
+    // A blank term must never widen into an unfiltered "every work package"
+    // request — it produces no filter at all.
+    for (const search of ['', '   ']) {
       expect(encodeWorkPackageParams({ search }).filters).toBeUndefined()
     }
+  })
+
+  it('strips the `#` off an id search so `#12345` reaches the filter as `12345`', () => {
+    // `subjectOrId` `**` compares ids exactly, so an unstripped `#12345`
+    // matches nothing — and `#12345` is the form the picker itself displays.
+    const params = encodeWorkPackageParams({ search: '#12345' })
+    const parsed = JSON.parse(params.filters!) as Array<{
+      subjectOrId: { values: string[] }
+    }>
+    expect(parsed[0].subjectOrId.values).toEqual(['12345'])
+  })
+
+  it('leaves a `#` that is not an id prefix in the term', () => {
+    const params = encodeWorkPackageParams({ search: '#hashtag' })
+    const parsed = JSON.parse(params.filters!) as Array<{
+      subjectOrId: { values: string[] }
+    }>
+    expect(parsed[0].subjectOrId.values).toEqual(['#hashtag'])
+  })
+
+  it('encodes sortBy as OpenProject expects', () => {
+    // Without it OpenProject defaults to `id asc` — creation order — so a
+    // capped page shows the oldest matches rather than the likeliest ones.
+    const params = encodeWorkPackageParams({
+      search: 'bug',
+      sortBy: [['updatedAt', 'desc']]
+    })
+    expect(JSON.parse(params.sortBy!)).toEqual([['updatedAt', 'desc']])
+  })
+
+  it('omits sortBy when not asked for', () => {
+    expect(encodeWorkPackageParams({ search: 'bug' }).sortBy).toBeUndefined()
+    expect(encodeWorkPackageParams({ sortBy: [] }).sortBy).toBeUndefined()
+  })
+
+  it('clamps a renderer-supplied pageSize to the main-process ceiling', () => {
+    // pageSize crosses IPC from the renderer, which is not a trusted source:
+    // an absurd value costs a response this process must fetch and parse.
+    expect(encodeWorkPackageParams({ pageSize: 1_000_000 }).pageSize).toBe(
+      String(MAX_PAGE_SIZE)
+    )
+    expect(encodeWorkPackageParams({ pageSize: 0 }).pageSize).toBe('1')
+    expect(encodeWorkPackageParams({ pageSize: -5 }).pageSize).toBe('1')
+    expect(encodeWorkPackageParams({ pageSize: 12.7 }).pageSize).toBe('12')
+    expect(encodeWorkPackageParams({ pageSize: Number.NaN }).pageSize).toBe(
+      String(MAX_PAGE_SIZE)
+    )
+    // A sane value passes through untouched.
+    expect(encodeWorkPackageParams({ pageSize: 50 }).pageSize).toBe('50')
+  })
+
+  it('combines search with onlyMine + statuses in one filters array', () => {
+    // The picker sends search alone, but the encoder must not silently drop
+    // filters when they are combined.
+    const params = encodeWorkPackageParams({
+      onlyMine: true,
+      statuses: ['3'],
+      search: 'bug'
+    })
+    const parsed = JSON.parse(params.filters!) as Array<Record<string, unknown>>
+    expect(parsed).toHaveLength(3)
+    expect(parsed[0]).toHaveProperty('assignee')
+    expect(parsed[1]).toHaveProperty('status')
+    expect(parsed[2]).toHaveProperty('subjectOrId')
   })
 
   it('combines onlyMine + statuses into one filters array', () => {
@@ -586,71 +671,81 @@ describe('extractApiErrorMessage', () => {
   })
 })
 
-describe('listWorkPackages — id prefix search', () => {
+describe('listWorkPackages — title search', () => {
   const BASE_URL = 'https://openproject.example.com'
   const API_KEY = 'unit-test-api-key'
 
-  /** A work package as `GET /api/v3/work_packages/{id}` returns it. */
-  function wp(id: number): Record<string, unknown> {
+  /** A collection as `GET /api/v3/work_packages?filters=…` returns it. */
+  function collection(ids: number[]): Record<string, unknown> {
     return {
-      id,
-      _type: 'WorkPackage',
-      subject: `Work package ${id}`,
-      _links: { self: { href: `/api/v3/work_packages/${id}` } }
+      _type: 'WorkPackageCollection',
+      total: ids.length,
+      count: ids.length,
+      _embedded: {
+        elements: ids.map((id) => ({
+          id,
+          _type: 'WorkPackage',
+          subject: `Work package ${id}`,
+          _links: { self: { href: `/api/v3/work_packages/${id}` } }
+        }))
+      }
     }
   }
 
-  /** 200 for ids in `existing`, 404 otherwise — keyed off the request URL. */
-  function respondForExisting(existing: number[]) {
-    return (url: URL) => {
-      const id = Number(url.pathname.split('/').pop())
-      return Promise.resolve(
-        existing.includes(id)
-          ? new Response(JSON.stringify(wp(id)), { status: 200 })
-          : new Response(JSON.stringify({ _type: 'Error' }), { status: 404 })
+  /** Always 200 with `ids`. Takes the URL so assertions can read it back. */
+  function respondWith(ids: number[]) {
+    return (_url: URL) =>
+      Promise.resolve(
+        new Response(JSON.stringify(collection(ids)), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        })
       )
-    }
   }
 
-  it('fetches the id directly, never a filtered collection', async () => {
-    // Filtering by id 400s when the id may not exist (see the encoder test), so
-    // a search resolves as a GET on the work package itself.
-    const fetchMock = vi.fn(respondForExisting([12345]))
+  it('issues one filtered collection request, not a per-id fetch', async () => {
+    // The old id search fanned out over GET /work_packages/{id}. A title search
+    // is an ordinary filtered collection — one round trip, and nothing
+    // user-authored in the path.
+    const fetchMock = vi.fn(respondWith([12345]))
     vi.stubGlobal('fetch', fetchMock)
     try {
       const client = new OpenProjectClient({ baseUrl: BASE_URL, apiKey: API_KEY })
-      await client.listWorkPackages({ search: '12345' })
+      await client.listWorkPackages({ search: 'login bug' })
 
       expect(fetchMock).toHaveBeenCalledTimes(1)
       const [url] = fetchMock.mock.calls[0] as [URL]
-      expect(url.pathname).toBe('/api/v3/work_packages/12345')
-      expect(url.searchParams.get('filters')).toBeNull()
+      expect(url.pathname).toBe('/api/v3/work_packages')
+      expect(JSON.parse(url.searchParams.get('filters')!)).toEqual([
+        { subjectOrId: { operator: '**', values: ['login bug'] } }
+      ])
     } finally {
       vi.unstubAllGlobals()
     }
   })
 
-  it('returns the work package as a one-element collection when it exists', async () => {
-    const fetchMock = vi.fn(respondForExisting([12345]))
+  it('returns the parsed collection in server order', async () => {
+    // No client-side re-sorting: relevance is the server's call for a title
+    // search, unlike the id-space slice the old search returned.
+    const fetchMock = vi.fn(respondWith([900, 12, 400]))
     vi.stubGlobal('fetch', fetchMock)
     try {
       const client = new OpenProjectClient({ baseUrl: BASE_URL, apiKey: API_KEY })
-      const result = await client.listWorkPackages({ search: '12345' })
+      const result = await client.listWorkPackages({ search: 'report' })
 
-      expect(result._embedded.elements.map((e) => e.id)).toEqual([12345])
-      expect(result.total).toBe(1)
-      expect(result.count).toBe(1)
+      expect(result._embedded.elements.map((e) => e.id)).toEqual([900, 12, 400])
+      expect(result.total).toBe(3)
     } finally {
       vi.unstubAllGlobals()
     }
   })
 
-  it('returns an empty collection when the id does not exist (404, not an error)', async () => {
-    const fetchMock = vi.fn(respondForExisting([]))
+  it('returns an empty collection when nothing matches', async () => {
+    const fetchMock = vi.fn(respondWith([]))
     vi.stubGlobal('fetch', fetchMock)
     try {
       const client = new OpenProjectClient({ baseUrl: BASE_URL, apiKey: API_KEY })
-      const result = await client.listWorkPackages({ search: '12345' })
+      const result = await client.listWorkPackages({ search: 'nothing matches' })
       expect(result._embedded.elements).toEqual([])
       expect(result.total).toBe(0)
     } finally {
@@ -658,7 +753,26 @@ describe('listWorkPackages — id prefix search', () => {
     }
   })
 
-  it('propagates a non-404 failure instead of reporting "no results"', async () => {
+  it('percent-encodes a term with query-significant characters', async () => {
+    // The term is untrusted renderer input. It must land as a value, unable to
+    // add or alter query parameters.
+    const fetchMock = vi.fn(respondWith([]))
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const client = new OpenProjectClient({ baseUrl: BASE_URL, apiKey: API_KEY })
+      await client.listWorkPackages({ search: 'a&pageSize=999#x' })
+
+      const [url] = fetchMock.mock.calls[0] as [URL]
+      expect(url.searchParams.get('pageSize')).toBeNull()
+      expect(JSON.parse(url.searchParams.get('filters')!)).toEqual([
+        { subjectOrId: { operator: '**', values: ['a&pageSize=999#x'] } }
+      ])
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('propagates a failure instead of reporting "no results"', async () => {
     // A revoked key must not look like an empty search.
     const fetchMock = vi.fn(() =>
       Promise.resolve(new Response('{}', { status: 401 }))
@@ -666,9 +780,9 @@ describe('listWorkPackages — id prefix search', () => {
     vi.stubGlobal('fetch', fetchMock)
     try {
       const client = new OpenProjectClient({ baseUrl: BASE_URL, apiKey: API_KEY })
-      await expect(client.listWorkPackages({ search: '12345' })).rejects.toMatchObject(
-        { code: 'OPENPROJECT_AUTH_FAILED' }
-      )
+      await expect(
+        client.listWorkPackages({ search: 'login bug' })
+      ).rejects.toMatchObject({ code: 'OPENPROJECT_AUTH_FAILED' })
     } finally {
       vi.unstubAllGlobals()
     }
@@ -710,16 +824,12 @@ describe('listWorkPackages — id prefix search', () => {
     try {
       const client = new OpenProjectClient({ baseUrl: BASE_URL, apiKey: API_KEY })
       const badTerms = [
-        '', // empty
-        '1', // too short
-        '123',
-        '1234', // below the 5-digit minimum — a search is a whole id
-        '123456', // over the 5-digit cap
-        '01234', // leading zero
-        '12a4', // not digits
-        'subject', // free text — the filter is id-only
-        '12 34',
-        '1234; DROP'
+        '', // empty — must never widen into "every work package"
+        'a', // below the 2-character minimum
+        '1',
+        '   ', // whitespace only: 3 characters, but a 0-character term
+        ' a ', // trims to 1 character
+        'x'.repeat(101) // over the 100-character cap
       ]
       for (const search of badTerms) {
         await expect(client.listWorkPackages({ search })).rejects.toMatchObject({

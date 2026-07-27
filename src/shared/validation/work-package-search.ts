@@ -3,11 +3,10 @@ import { z } from 'zod'
 /**
  * The work-package picker's search term.
  *
- * The dropdown searches by work-package **id**, so the term is digits only:
- * at most 5, never starting with `0` (no OpenProject id does). Below
- * `WORK_PACKAGE_SEARCH_MIN_DIGITS` the picker filters its already-loaded
- * items locally; at or above it, the term is sent to the server so items
- * outside the priority list become reachable.
+ * The dropdown searches by work-package **title**, so the term is free text.
+ * Below `WORK_PACKAGE_SEARCH_MIN_CHARS` the picker only filters its
+ * already-loaded items; at or above it, a term that matched nothing locally is
+ * sent to the server so items outside the priority list become reachable.
  *
  * Lives in `src/shared/` because both trees need the identical rule: the
  * renderer applies it to keystrokes, and the main process re-applies it
@@ -15,83 +14,87 @@ import { z } from 'zod'
  * (`.opencode/rules/security.md`).
  */
 
-/** Hard cap on the term's length. */
-export const WORK_PACKAGE_SEARCH_MAX_DIGITS = 5
+/**
+ * Hard cap on the term's length.
+ *
+ * Nothing on the OpenProject side requires it; it bounds what a keystroke can
+ * push into a query string, and no useful subject search is this long.
+ */
+export const WORK_PACKAGE_SEARCH_MAX_CHARS = 100
 
 /**
  * Shortest term that triggers a server search.
  *
- * Equal to the cap, so a search is a whole id and resolves in exactly one
- * request. A shorter term would be a prefix, and a prefix has to be enumerated
- * into candidate ids and fetched one by one (see
- * {@link expandWorkPackageIdPrefix}) — 11 requests for a 4-digit term. Lower
- * this only if that fan-out is acceptable.
+ * A single character matches an appreciable fraction of any instance, so the
+ * request would cost a round trip to return a list nobody can scan. Two is the
+ * point where a subject substring starts to discriminate.
  */
-export const WORK_PACKAGE_SEARCH_MIN_DIGITS = 5
+export const WORK_PACKAGE_SEARCH_MIN_CHARS = 2
 
 /**
- * A complete, server-searchable term: no leading zero, and between
- * {@link WORK_PACKAGE_SEARCH_MIN_DIGITS} and
- * {@link WORK_PACKAGE_SEARCH_MAX_DIGITS} digits — currently exactly 5.
- * Anything else is either still being typed or not a term at all.
+ * Reduce a term to what should actually be matched against: trimmed, and with
+ * the `#` stripped off an all-digits `#12345`.
+ *
+ * The `#` form is not an edge case — it is how this app labels every option
+ * (`#12345 · Fix login bug`) and how OpenProject's own UI writes ids, so it is
+ * the most likely thing a user pastes. Left alone it matches nothing: it isn't
+ * the id (`'#12345' !== '12345'`) and `subjectOrId`'s `**` operator compares
+ * ids exactly, so the server rejects it too.
+ *
+ * Only stripped when digits are all that follow, so a subject search for
+ * `#hashtag` — or for a literal `#12345` inside a subject — is untouched.
+ * Stripping is strictly more permissive anyway: `12345` still matches a
+ * subject containing `#12345`.
+ */
+export function normalizeWorkPackageSearchTerm(raw: string): string {
+  const trimmed = (raw ?? '').trim()
+  return /^#\d+$/.test(trimmed) ? trimmed.slice(1) : trimmed
+}
+
+/**
+ * A complete, server-searchable term: between
+ * {@link WORK_PACKAGE_SEARCH_MIN_CHARS} and
+ * {@link WORK_PACKAGE_SEARCH_MAX_CHARS} characters once trimmed. Anything
+ * shorter is either still being typed or not a term at all.
+ *
+ * Trimming and `#`-stripping are part of the schema, so the parsed output —
+ * not the raw input — is what callers send onward. The length bounds are
+ * checked *before* normalizing, so `#7` is a valid two-character term that
+ * resolves to the one-character id lookup `7`.
  */
 export const WorkPackageSearchTermSchema = z
   .string()
-  .regex(
-    /^[1-9][0-9]{4}$/,
-    `Search must be ${WORK_PACKAGE_SEARCH_MAX_DIGITS} digits and cannot start with 0.`
+  .trim()
+  .min(
+    WORK_PACKAGE_SEARCH_MIN_CHARS,
+    `Search must be at least ${WORK_PACKAGE_SEARCH_MIN_CHARS} characters.`
   )
+  .max(
+    WORK_PACKAGE_SEARCH_MAX_CHARS,
+    `Search must be at most ${WORK_PACKAGE_SEARCH_MAX_CHARS} characters.`
+  )
+  .transform(normalizeWorkPackageSearchTerm)
 
 /**
- * Coerce raw keystrokes into the allowed shape — non-digits dropped, leading
- * zeros dropped, truncated to the cap. Applied on every input event, so it
- * has to accept partial terms (`''`, `'1'`, `'12'`) rather than reject them.
+ * Coerce raw keystrokes into the allowed shape — control characters dropped,
+ * truncated to the cap. Applied on every input event, so it has to accept
+ * partial terms (`''`, `'a'`) rather than reject them.
  *
- * Leading zeros are stripped rather than blocking the keystroke so pasting
- * `0123` yields `123` instead of nothing.
+ * Deliberately does *not* trim: a trailing space is how you type two words, so
+ * stripping it mid-sentence would fight the user. {@link WorkPackageSearchTermSchema}
+ * trims at the point the term is actually used.
+ *
+ * Control characters (including the newline a paste can carry) are the only
+ * class removed — everything else is legitimate subject text, and the term is
+ * percent-encoded into a query value rather than interpolated anywhere.
  */
 export function sanitizeWorkPackageSearchInput(raw: string): string {
   return (raw ?? '')
-    .replace(/\D/g, '')
-    .replace(/^0+/, '')
-    .slice(0, WORK_PACKAGE_SEARCH_MAX_DIGITS)
+    .replace(/\p{Cc}|\p{Cf}/gu, '')
+    .slice(0, WORK_PACKAGE_SEARCH_MAX_CHARS)
 }
 
 /** Whether `value` is long enough and well-formed to query the server with. */
 export function isWorkPackageSearchTerm(value: string): boolean {
   return WorkPackageSearchTermSchema.safeParse(value).success
-}
-
-/**
- * Expand a partial id into every id it could be the prefix of — `'1234'` →
- * `['1234', '12340', … '12349']`.
- *
- * OpenProject has no prefix operator for a numeric id: its `subjectOrId`
- * filter matches an id **exactly**, so searching `1234` finds #1234 and never
- * #12345. Enumerating the prefix instead turns a prefix search into an exact
- * `id` `=` filter — server-side, one request, and only ids that exist come
- * back.
- *
- * With the minimum equal to the cap this always returns a single id — the term
- * *is* a whole id. The expansion is kept because it's what makes a shorter
- * minimum possible: drop {@link WORK_PACKAGE_SEARCH_MIN_DIGITS} to 4 and this
- * returns 11 ids, each of which costs a request. The cap encodes the same
- * assumption as the input's length limit — that no work-package id is longer
- * than 5 digits — and each extra digit of range multiplies the list by 10.
- *
- * Returns `[]` for anything that isn't a valid term, so callers can't turn a
- * malformed input into an unfiltered "every work package" request.
- */
-export function expandWorkPackageIdPrefix(term: string): string[] {
-  if (!isWorkPackageSearchTerm(term)) return []
-
-  const ids = [term]
-  let frontier = [term]
-  while (frontier[0].length < WORK_PACKAGE_SEARCH_MAX_DIGITS) {
-    frontier = frontier.flatMap((prefix) =>
-      Array.from({ length: 10 }, (_, digit) => `${prefix}${digit}`)
-    )
-    ids.push(...frontier)
-  }
-  return ids
 }
