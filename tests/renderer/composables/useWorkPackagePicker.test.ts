@@ -71,10 +71,13 @@ function searchCalls(): string[] {
     .filter((s): s is string => s !== undefined)
 }
 
-function mountPicker(selectedId: number | undefined = undefined) {
+function mountPicker(
+  selectedId: number | undefined = undefined,
+  into: EffectScope = scope
+) {
   let picker!: ReturnType<typeof useWorkPackagePicker>
   app.runWithContext(() => {
-    scope.run(() => {
+    into.run(() => {
       picker = useWorkPackagePicker({ selectedId: () => selectedId })
     })
   })
@@ -200,6 +203,25 @@ describe('useWorkPackagePicker — local-first', () => {
 
     expect(searchCalls()).toEqual([])
     expect(picker.items.value.map((i) => i.value)).toEqual([101])
+  })
+})
+
+describe('useWorkPackagePicker — reopening the form', () => {
+  it('shows the priority list on a remount, against an already-loaded query', async () => {
+    // The modal unmounts its body on close, so reopening builds a *fresh*
+    // picker over the app-wide `usePriorityWorkPackages`, which by then has
+    // long since loaded. Nothing about the second picker changes, so anything
+    // keyed on a load *transition* never runs for it — and the dropdown opens
+    // empty until the user types. The picker has to settle at setup instead.
+    const firstOpen = effectScope()
+    mountPicker(undefined, firstOpen)
+    await flush()
+    firstOpen.stop()
+
+    const reopened = mountPicker()
+    await flush()
+
+    expect(reopened.items.value.map((i) => i.value)).toEqual([101, 102])
   })
 })
 

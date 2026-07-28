@@ -168,9 +168,21 @@ export function useWorkPackagePicker(options: UseWorkPackagePickerOptions) {
   // Re-settle when the priority list arrives: a term typed against an unloaded
   // list latched `local` with nothing in it, and would otherwise sit there
   // showing an empty dropdown until the next keystroke.
-  watch(priorityLoading, (loading) => {
-    if (!loading) settle(searchTerm.value)
-  })
+  //
+  // `immediate` because the list is shared app-wide (`defineQuery`) and only
+  // ever loads once, while this picker is rebuilt every time the form is
+  // remounted. Waiting on the flag to *change* means the second and every
+  // later mount finds it already `false`, never settles, and shows the empty
+  // seed until the user types. Settling at setup against a still-loading list
+  // is a no-op — `decideWorkPackageSearch` returns the same empty `local`
+  // decision the seed already holds.
+  watch(
+    priorityLoading,
+    (loading) => {
+      if (!loading) settle(searchTerm.value)
+    },
+    { immediate: true }
+  )
 
   // The form outlives no timer: a picker unmounted mid-debounce would
   // otherwise wake up to write into a discarded scope.
