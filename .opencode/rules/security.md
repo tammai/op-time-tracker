@@ -6,7 +6,7 @@ paths:
 ---
 # Security Rules
 
-- **Plan for it, don't just check for it.** Specs for features touching auth, sessions, secrets, PII, or untrusted input must include a Security considerations section (see `AI_TASK_GUIDE.md`) naming concrete risks before implementation starts — not just at review time.
+- **Plan for it, don't just check for it.** Specs for features touching auth, sessions, secrets, PII, or untrusted input must include a Security considerations section (`/task-workflow` has the format) naming concrete risks before implementation starts — not just at review time.
 - **No unauthenticated endpoints.** Every OpenProject request requires the stored API key; no anonymous passthrough.
 - **The OpenProject API key is a secret.** It lives only in the OS keychain via Electron `safeStorage` (with an `electron-store` fallback only when `safeStorage.isEncryptionAvailable()` returns false, never plaintext). It is never logged, never exposed to the renderer, never passed across IPC, never written to a file in plaintext.
 - **All OpenProject HTTP is main-process only.** The renderer communicates only via the `contextBridge`-exposed, narrowly-typed `window.openproject.*` surface. Never expose a generic fetch, never expose the key, never expose `safeStorage`/`electron-store` to the renderer.

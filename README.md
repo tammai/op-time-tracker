@@ -241,12 +241,11 @@ This repo runs a **dual harness**: Claude Code reads `CLAUDE.md` + `.claude/rule
    ln -sf ../../scripts/pre-commit.sh .git/hooks/pre-commit && chmod +x scripts/pre-commit.sh
    ```
 4. Verify gates pass: `pnpm lint && pnpm type-check && pnpm test --run`
-5. Read `CLAUDE.md` → use `/task-workflow` (or read `AI_TASK_GUIDE.md`) for the per-task workflow.
+5. Read `CLAUDE.md` → use `/task-workflow` for the per-task workflow (`AI_TASK_GUIDE.md` is the
+   human-readable summary of what it does).
 6. Do one scoped task end-to-end through all gates to confirm the setup works.
 
 ### Runtime hygiene
-- Run `/clear` between unrelated tasks to reset context and avoid token accumulation.
-- Pipe long command output: `long-cmd | head -50` to avoid flooding context.
 - Delegate broad scans (grep across the repo, full test suites) to subagents rather than running them inline.
 
 ## Context Budget
@@ -256,3 +255,4 @@ Run `/context` after setup and record the harness token footprint. Run `node too
 | Date | Always-loaded tokens (est.) | Budget status |
 |------|-----------------------------|---------------|
 | 2026-07-25 | ~2 383 | Pass (9 532 / 12 000 chars) |
+| 2026-08-03 | ~2 357 | Pass (9 428 / 12 000 chars) |

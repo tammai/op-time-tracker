@@ -10,13 +10,49 @@
 // Fails (exit 1) on:
 //   CLAUDE.md or AGENTS.md > 60 lines
 //   Any rule file without paths: frontmatter AND > 40 lines
-//   Total always-loaded chars (briefs + unscoped rules) > 12 000 (~3 000 tokens)
+//   Any .claude/skills/*/SKILL.md description: > 350 chars
+//   Total always-loaded chars (briefs + unscoped rules + skill descriptions) > 12 000 (~3 000 tokens)
+//
+// Skill `description:` frontmatter counts because it is injected for every skill on
+// every turn — the same always-loaded surface as the briefs, just spread across files.
+// The skills scan no-ops in repos that don't author their own skills.
 import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 
 const BRIEF_LINE_LIMIT = 60;
 const UNSCOPED_RULE_LIMIT = 40;
+const SKILL_DESCRIPTION_LIMIT = 350;
 const ALWAYS_LOADED_CHAR_LIMIT = 12_000;
+
+// Pulls `description:` out of YAML frontmatter, following indented continuation
+// lines so a wrapped multi-line description is measured whole, not just its first line.
+function readDescription(text) {
+  if (!text.startsWith("---\n")) return null;
+  const end = text.indexOf("\n---\n", 4);
+  if (end === -1) return null;
+  const lines = text.slice(4, end).split("\n");
+  const start = lines.findIndex((l) => /^description:/.test(l));
+  if (start === -1) return null;
+  const parts = [lines[start].replace(/^description:\s*/, "")];
+  for (let i = start + 1; i < lines.length && /^\s+\S/.test(lines[i]); i++) {
+    parts.push(lines[i].trim());
+  }
+  return parts.join(" ").trim();
+}
+
+function meterSkill(skillFile) {
+  const description = readDescription(readFileSync(skillFile, "utf-8"));
+  if (description === null) {
+    errors.push(`${skillFile}: no description: in frontmatter — the skill will never trigger`);
+    return;
+  }
+  alwaysLoadedChars += description.length;
+  if (description.length > SKILL_DESCRIPTION_LIMIT) {
+    errors.push(
+      `${skillFile}: description is ${description.length} chars (limit: ${SKILL_DESCRIPTION_LIMIT}) — always loaded, every turn`
+    );
+  }
+}
 
 const BRIEFS = ["CLAUDE.md", "AGENTS.md"];
 const RULE_DIRS = [".claude/rules", ".opencode/rules"];
@@ -74,6 +110,15 @@ for (const rulesDir of RULE_DIRS) {
 
 if (!anyRuleDir) {
   console.log("WARN no rule dir found (.claude/rules/, .opencode/rules/) — skipping rule checks");
+}
+
+for (const root of ["skills", ".claude/skills"]) {
+  if (!existsSync(root)) continue;
+  const skillDirs = readdirSync(root, { withFileTypes: true })
+    .filter((d) => d.isDirectory() && existsSync(join(root, d.name, "SKILL.md")))
+    .map((d) => d.name)
+    .sort();
+  for (const name of skillDirs) meterSkill(join(root, name, "SKILL.md"));
 }
 
 if (alwaysLoadedChars > ALWAYS_LOADED_CHAR_LIMIT) {

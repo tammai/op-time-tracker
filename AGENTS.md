@@ -35,9 +35,4 @@ See `.opencode/rules/` — path-scoped conventions, security, architecture.
 - `.opencode/plugins/bigin-guards.ts` enforces the bash guard, spec gate, and injection gate below — don't try to work around it; fix the underlying issue instead.
 
 ## Task workflow
-Non-trivial features: /task-workflow (or read AI_TASK_GUIDE.md).
-
-## Compact instructions
-Preserve: code changes, key decisions, blockers.
-Drop from context: tool output, file reads, search results.
-Run /clear between unrelated tasks. Pipe long output: `cmd | head -50`.
+Non-trivial features: /task-workflow.

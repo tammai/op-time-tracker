@@ -23,6 +23,8 @@
 // tmpfile (which existed only because Claude Code hooks are one-shot
 // subprocesses that can't share memory across invocations).
 
+import { execSync } from "node:child_process"
+
 import type { Plugin } from "@opencode-ai/plugin"
 
 // ---- bash-guard: blocks commands that bypass quality gates -----------------
@@ -61,11 +63,40 @@ function lineCount(text: string): number {
   return text === "" ? 0 : text.split("\n").length
 }
 
-async function isPlanApproved(directory: string, readFile: (p: string) => Promise<string | null>): Promise<boolean> {
-  const content = await readFile(`${directory}/PLAN.md`)
-  if (content === null) return false
-  const match = content.match(/^Status:\s*(\S+)/m)
-  return !!match && match[1].toLowerCase() === "approved"
+type PlanVerdict = { ok: boolean; declared?: string; actual?: string }
+
+function currentBranch(directory: string): string | null {
+  try {
+    const b = execSync("git rev-parse --abbrev-ref HEAD", {
+      cwd: directory,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim()
+    return b === "HEAD" ? null : b // detached HEAD — nothing to compare against
+  } catch {
+    return null // not a git repo, or git unavailable
+  }
+}
+
+// `Branch:` is optional — plans written before it existed, or on a detached HEAD,
+// simply skip the check. Never block on something git can't answer.
+function branchVerdict(directory: string, plan: string): PlanVerdict {
+  const declared = plan.match(/^Branch:\s*(\S+)/m)?.[1]
+  if (!declared) return { ok: true }
+  const actual = currentBranch(directory)
+  if (!actual || declared === actual) return { ok: true }
+  return { ok: false, declared, actual }
+}
+
+async function planVerdict(
+  directory: string,
+  readFile: (p: string) => Promise<string | null>
+): Promise<PlanVerdict> {
+  const plan = await readFile(`${directory}/PLAN.md`)
+  if (plan === null) return { ok: false }
+  const status = plan.match(/^Status:\s*(\S+)/m)
+  if (!status || status[1].toLowerCase() !== "approved") return { ok: false }
+  return branchVerdict(directory, plan)
 }
 
 // Field names are defensive guesses — see the file-header VERIFY note.
@@ -170,14 +201,16 @@ export const BiginGuardsPlugin: Plugin = async ({ directory, $, client }) => {
         if (!filePath) return
         if (TRIVIAL_PATH_PATTERNS.some((p) => p.test(filePath))) return
 
-        const approved = await isPlanApproved(directory, readFileOrNull)
-        if (approved) return
+        const verdict = await planVerdict(directory, readFileOrNull)
+        if (verdict.ok) return
 
         const existing = await readFileOrNull(filePath)
         const size = editChangeSize(args, existing)
         if (size > SPEC_GATE_LINE_THRESHOLD) {
           throw new Error(
-            "PLAN.md missing or not approved. Get spec approval (see task-workflow skill) before non-trivial edits, or keep the change ≤20 lines."
+            verdict.declared
+              ? `PLAN.md is for branch '${verdict.declared}' but HEAD is '${verdict.actual}' — a leftover plan from another task. Finish it, update its Branch: line, or delete it (see task-workflow skill) before non-trivial edits here.`
+              : "PLAN.md missing or not approved. Get spec approval (see task-workflow skill) before non-trivial edits, or keep the change ≤20 lines."
           )
         }
       }

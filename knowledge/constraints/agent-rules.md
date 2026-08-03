@@ -18,12 +18,12 @@ The OpenProject API key lives only in the main process (via `safeStorage`, with 
 Every OpenProject response goes through a Zod schema in `src/main/schemas/` and is `.parse()`d in the main process before being returned over IPC. A new response shape = a new schema, first.
 
 ## Security-sensitive code
-Anything touching auth (API key, base URL), secrets, or PII must have its security considerations named in the spec (see `AI_TASK_GUIDE.md`) before implementation starts, and goes through `.opencode/rules/security.md` before merging. The base URL is user-controlled — validate as a well-formed `http(s)` URL before use.
+Anything touching auth (API key, base URL), secrets, or PII must have its security considerations named in the spec (`/task-workflow` has the format) before implementation starts, and goes through `.opencode/rules/security.md` before merging. The base URL is user-controlled — validate as a well-formed `http(s)` URL before use.
 
 ## Spec-before-code
-Non-trivial features need an approved spec first — see `AI_TASK_GUIDE.md`. The spec must include a Security considerations section for features touching auth, secrets, PII, or untrusted input. Don't start implementation on an unapproved spec.
+Non-trivial features need an approved spec first — run `/task-workflow`. The spec must include a Security considerations section for features touching auth, secrets, PII, or untrusted input. Don't start implementation on an unapproved spec.
 
 ## Citations
 - `.opencode/rules/conventions-server.md`, `.opencode/rules/security.md` — enforced rule files
-- `AI_TASK_GUIDE.md` — spec gate workflow
+- `AI_TASK_GUIDE.md` — human orientation; `/task-workflow` is the authoritative spec-gate workflow
 - `knowledge/contracts/ipc-contract.md` — IPC contract policy

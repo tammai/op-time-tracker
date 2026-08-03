@@ -33,6 +33,6 @@ pnpm-debug.log*
 graphify-out/cost.json
 graphify-out/cache/
 
-# Disposable per-task spec (AI_TASK_GUIDE.md) — written on approval, deleted
+# Disposable per-task spec (/task-workflow) — written on approval, deleted
 # when the task ships. Never part of a commit.
 PLAN.md
