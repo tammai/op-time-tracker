@@ -15,7 +15,18 @@ import { existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-const data = JSON.parse(readFileSync(0, 'utf-8'))
+// Fail closed: an unparsable payload would otherwise exit 1, which Claude Code
+// treats as non-blocking — the call would run with both stages skipped.
+function readPayload() {
+  try {
+    return JSON.parse(readFileSync(0, 'utf-8'))
+  } catch {
+    console.error('Error: injection-gate-guard.mjs could not parse its hook payload (empty or malformed stdin) — blocking rather than passing the call through unchecked.')
+    process.exit(2)
+  }
+}
+
+const data = readPayload()
 const sessionId = data?.session_id ?? 'unknown'
 const toolInput = data?.tool_input ?? {}
 

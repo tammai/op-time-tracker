@@ -3,7 +3,18 @@
 // Claude Code PreToolUse hook — reads tool input from stdin, exits 2 to block.
 import { readFileSync } from 'node:fs'
 
-const data = JSON.parse(readFileSync(0, 'utf-8'))
+// Fail closed: an unparsable payload would otherwise exit 1, which Claude Code
+// treats as non-blocking — the command would run ungated.
+function readPayload() {
+  try {
+    return JSON.parse(readFileSync(0, 'utf-8'))
+  } catch {
+    console.error('Error: bash-guard.mjs could not parse its hook payload (empty or malformed stdin) — blocking rather than passing the call through unchecked.')
+    process.exit(2)
+  }
+}
+
+const data = readPayload()
 const command = data?.tool_input?.command ?? ''
 
 // Strip quoted strings so flags inside commit messages don't trigger false positives.

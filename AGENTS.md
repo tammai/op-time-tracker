@@ -26,6 +26,7 @@ See `.opencode/rules/` — path-scoped conventions, security, architecture.
 
 ## Hard Rules (non-negotiable)
 - No `--no-verify`. No `eslint-disable` without a justifying comment. No weakening eslint config to pass checks.
+- Commit messages are Conventional Commits — `type(scope): subject` (enforced by `commit-msg-guard.mjs`).
 - No `@ts-ignore` or `as any` without a justifying comment.
 - The OpenProject API key is a **secret**. It lives only in the main process and the OS keychain (Electron `safeStorage`), with an `electron-store` fallback only when `safeStorage.isEncryptionAvailable()` returns false. It is never written to disk in plaintext, never logged, never exposed to the renderer.
 - All OpenProject HTTP requests are made by the **main process**. The renderer communicates only via `contextBridge`-exposed, narrowly-typed IPC (`window.openproject.*`) — never a generic fetch, never the key itself.

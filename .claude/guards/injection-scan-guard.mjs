@@ -9,7 +9,15 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-const data = JSON.parse(readFileSync(0, 'utf-8'))
+// PostToolUse can't block, so there's no fail-closed option here — exit quietly
+// on an unparsable payload rather than dumping a stack trace. The PreToolUse
+// guards fail closed (exit 2) in the same situation.
+let data
+try {
+  data = JSON.parse(readFileSync(0, 'utf-8'))
+} catch {
+  process.exit(0)
+}
 const toolName = data?.tool_name ?? ''
 const toolInput = data?.tool_input ?? {}
 const toolResponse = data?.tool_response ?? ''

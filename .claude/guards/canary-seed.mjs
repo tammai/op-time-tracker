@@ -9,7 +9,15 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 
-const data = JSON.parse(readFileSync(0, 'utf-8'))
+// SessionStart can't block, so an unparsable payload takes the same path as a
+// missing session_id: no token seeded, stage 3 inert for this session. Exit
+// quietly rather than dumping a stack trace.
+let data
+try {
+  data = JSON.parse(readFileSync(0, 'utf-8'))
+} catch {
+  process.exit(0)
+}
 const sessionId = data?.session_id
 
 if (!sessionId) process.exit(0)
