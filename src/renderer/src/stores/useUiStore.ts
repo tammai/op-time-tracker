@@ -38,6 +38,17 @@ export const useUiStore = defineStore('ui', () => {
    */
   const hasOpenedWorkPackages = ref(false)
 
+  /** Work-package create drawer — opened from the calendar's floating button. */
+  const isCreateDrawerOpen = ref(false)
+
+  /**
+   * Whether the create drawer has ever been opened — same latch as
+   * `hasOpenedWorkPackages`. The drawer's `useWorkPackageCreator` fires a
+   * projects query on mount, so it must not mount at app start; and a plain
+   * `v-if` on `isCreateDrawerOpen` would cut off its close transition.
+   */
+  const hasOpenedCreateDrawer = ref(false)
+
   /**
    * The day the modal is logging against, as `YYYY-MM-DD`. `null` only
    * before the modal has ever been opened — the modal itself is never
@@ -53,6 +64,12 @@ export const useUiStore = defineStore('ui', () => {
   function openWorkPackages(): void {
     hasOpenedWorkPackages.value = true
     isWorkPackagesOpen.value = true
+  }
+
+  /** Open the create drawer — called from the calendar's floating button. */
+  function openCreateDrawer(): void {
+    hasOpenedCreateDrawer.value = true
+    isCreateDrawerOpen.value = true
   }
 
   /** Open the day modal for `date` — called from a calendar cell. */
@@ -75,9 +92,12 @@ export const useUiStore = defineStore('ui', () => {
     isDayModalOpen,
     isWorkPackagesOpen,
     hasOpenedWorkPackages,
+    isCreateDrawerOpen,
+    hasOpenedCreateDrawer,
     activeDate,
     openSettings,
     openWorkPackages,
+    openCreateDrawer,
     openDay,
     closeDay
   }

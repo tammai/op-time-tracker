@@ -489,10 +489,18 @@ function clearDates(): void {
 
            The `base` overrides fix spacing meant for a full-width document:
            `sm:px-8` indents the text away from every other field, `*:my-5` puts
-           1.25rem between blocks, and `leading-7` loosens the lines. -->
+           1.25rem between blocks, and `leading-7` loosens the lines.
+
+           `:key` on the disabled verdict: `UEditor` reads `editable` once at
+           creation and never watches it, so an editor created non-editable (no
+           project chosen yet) stays non-editable after the project is picked and
+           the prop flips to true. Re-keying on the disabled state forces a fresh
+           editor — created already-editable — the moment a project is chosen.
+           The draft holds the text, so recreation loses no content. -->
 
       <UEditor
         v-slot="{ editor }"
+        :key="`description-${props.fields.description.disabled}`"
         v-model="draft.description"
         content-type="markdown"
         class="w-full min-h-64 rounded-md border border-accented divide-y divide-accented"

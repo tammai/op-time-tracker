@@ -21,7 +21,6 @@ import {
   toFieldOptions,
   toProjectOptions,
   workPackageCreateIssue,
-  workPackageProjectId,
   type AssigneeOption,
   type FieldOption,
   type WorkPackageDraft
@@ -377,32 +376,26 @@ export function useWorkPackageCreator(selected: Ref<WorkPackage | null>) {
    * for the same reason, but a composable that only enforces its precondition in
    * a template is one refactor away from not enforcing it at all.
    *
-   * The project carries over from the previous create, since a second work
-   * package usually belongs beside the first. When nothing is chosen yet it is
-   * seeded from the selected work package's project, so "New" from a row starts
-   * where the user already is — but only if that project is one this key may
-   * actually create in.
+   * Each create starts from a blank project — the form leads with "Choose a
+   * project" rather than inheriting the selected row's project or the previous
+   * create's. The two create surfaces (the browse screen's panel and the
+   * calendar's drawer) then agree on what "new" means, and choosing the
+   * project is the one decision everything else hangs off, so making it
+   * explicit each time beats guessing it from context.
    */
   function startCreating(): void {
     if (!canStartCreating.value) return
     draft.value = emptyWorkPackageDraft()
     createError.value = null
-    // A fresh draft is owed the assignee default again, even when the project
-    // carried over from the last create and so never changed. Both default
-    // watchers also key on `isCreating`, which is what makes them re-run against
-    // an already-loaded form instead of waiting for data that won't change.
+    // A fresh draft is owed the assignee default again. Both default watchers
+    // also key on `isCreating`, which is what makes them re-run against an
+    // already-loaded form instead of waiting for data that won't change.
     hasDefaultedAssignee.value = false
     defaultedAssigneeId.value = null
-
-    if (projectId.value === null && selected.value !== null) {
-      const fromSelection = workPackageProjectId(selected.value)
-      if (
-        fromSelection !== null &&
-        projectOptions.value.some((option) => option.value === fromSelection)
-      ) {
-        projectId.value = fromSelection
-      }
-    }
+    // Reset the project too: a create never inherits the project from the
+    // selection or the previous create. Setting it before `isCreating` flips
+    // means the `projectId` watcher's cascade runs against the empty draft.
+    projectId.value = null
     isCreating.value = true
   }
 

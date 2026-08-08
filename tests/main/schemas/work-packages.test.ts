@@ -310,6 +310,26 @@ describe('normalizeWorkPackageForm', () => {
     }
   })
 
+  it('treats a field that omits `writable` as writable (the API default)', () => {
+    // `writable` defaults to true in OpenProject's form schema; a property that
+    // leaves the key off is writable, and only an explicit `false` is not.
+    const form = WorkPackageFormSchema.parse(
+      normalizeWorkPackageForm(
+        WorkPackageFormResponseSchema.parse({
+          _type: 'Form',
+          _embedded: {
+            schema: {
+              subject: { type: 'String' },
+              startDate: { writable: false }
+            }
+          }
+        })
+      )
+    )
+    expect(form.subject.writable).toBe(true)
+    expect(form.startDate.writable).toBe(false)
+  })
+
   it('reports a non-writable field rather than dropping it', () => {
     const form = WorkPackageFormSchema.parse(
       normalizeWorkPackageForm(
@@ -738,6 +758,29 @@ describe('normalizeWorkPackageCreateForm', () => {
     ] as const) {
       expect(form[key].writable).toBe(true)
     }
+  })
+
+  it('treats a field that omits `writable` as writable (the API default)', () => {
+    // OpenProject's form schema defaults `writable` to true; a live create form
+    // leaves the key off `description`, which `=== true` misread as non-writable
+    // and greyed the field out. Only an explicit `writable: false` disables.
+    const form = WorkPackageCreateFormSchema.parse(
+      normalizeWorkPackageCreateForm(
+        WorkPackageCreateFormResponseSchema.parse({
+          _type: 'Form',
+          _embedded: {
+            schema: {
+              description: { type: 'Formattable' },
+              subject: { type: 'String' },
+              startDate: { writable: false }
+            }
+          }
+        })
+      )
+    )
+    expect(form.description.writable).toBe(true)
+    expect(form.subject.writable).toBe(true)
+    expect(form.startDate.writable).toBe(false)
   })
 
   /**

@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
 import OnboardingView from './views/OnboardingView.vue'
 import CalendarView from './views/CalendarView.vue'
 import DayEntriesModal from './components/DayEntriesModal.vue'
 import SettingsModal from './components/SettingsModal.vue'
 import WorkPackagesModal from './components/WorkPackagesModal.vue'
+import WorkPackageCreateDrawer from './components/WorkPackageCreateDrawer.vue'
 import CalendarHeader from './components/CalendarHeader.vue'
 import { useUiStore } from './stores/useUiStore'
 
@@ -56,6 +57,23 @@ function onConfigured(): void {
 function onDisconnected(): void {
   gate.value = 'onboarding'
 }
+
+/**
+ * Whether the "new work package" floating button is shown.
+ *
+ * It floats over the calendar, so it hides the moment any overlay covers the
+ * screen — the day, work-packages, or settings modal, or the create drawer it
+ * itself opens — rather than poking through above them. `fixed` places it
+ * relative to the viewport, which is why it isn't a child of the `UMain` flex
+ * column.
+ */
+const fabVisible = computed(
+  () =>
+    !ui.isDayModalOpen &&
+    !ui.isWorkPackagesOpen &&
+    !ui.isSettingsOpen &&
+    !ui.isCreateDrawerOpen
+)
 </script>
 
 <template>
@@ -91,6 +109,21 @@ function onDisconnected(): void {
         <CalendarView class="min-h-0 flex-1" />
       </UMain>
 
+      <!-- The floating "new work package" action. A solid circular button
+           pinned bottom-right of the calendar; clicking it opens the create
+           drawer. `fixed` so it floats over the grid regardless of how the
+           shell's flex column lays out. -->
+      <UTooltip v-if="fabVisible" text="New work package" :content="{ side: 'left' }">
+        <UButton
+          color="primary"
+          size="xl"
+          icon="i-lucide-plus"
+          aria-label="New work package"
+          class="fixed bottom-6 right-6 z-50 rounded-full shadow-lg"
+          @click="ui.openCreateDrawer()"
+        />
+      </UTooltip>
+
       <!-- Overlays, mounted once for the whole shell. -->
       <DayEntriesModal
         v-if="ui.activeDate"
@@ -105,6 +138,15 @@ function onDisconnected(): void {
       <WorkPackagesModal
         v-if="ui.hasOpenedWorkPackages"
         v-model:open="ui.isWorkPackagesOpen"
+      />
+
+      <!-- Mounted on the same latch as the work-packages modal: the drawer's
+           `useWorkPackageCreator` fires a projects query on mount, so it stays
+           unmounted until the floating button is first pressed; latching keeps
+           it mounted afterwards so its close transition plays out. -->
+      <WorkPackageCreateDrawer
+        v-if="ui.hasOpenedCreateDrawer"
+        v-model:open="ui.isCreateDrawerOpen"
       />
 
       <SettingsModal

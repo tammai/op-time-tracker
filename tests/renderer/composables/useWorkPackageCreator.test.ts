@@ -208,19 +208,35 @@ describe('useWorkPackageCreator — entering and leaving create mode', () => {
   })
 
   /**
-   * "New" from a row in a project should start in that project. Only when
-   * nothing is chosen yet — a second create in a row keeps the project the user
-   * just used, which is almost always the one they want again.
+   * A new work package starts on a blank project — the form leads with
+   * "Choose a project" — whether or not a row is selected, and regardless of
+   * that row's project. The two create surfaces agree on this (the calendar
+   * drawer resets the project too), and choosing the project is the one
+   * decision everything else hangs off, so making it explicit each time beats
+   * guessing it from context.
    */
-  it('starts in the selected work package’s project when none is chosen', async () => {
+  it('starts with no project selected, even when a work package is selected', async () => {
     const creator = mountCreator(ref(wp()))
     await flush()
     creator.startCreating()
     await flush()
-    expect(creator.projectId.value).toBe(7)
+    expect(creator.projectId.value).toBeNull()
   })
 
-  it('keeps the project already chosen rather than re-deriving it', async () => {
+  it('starts with no project when the selection is in a non-creatable project', async () => {
+    // No project is ever seeded from the selection now, so a selection whose
+    // project isn't creatable is no longer a special case — but the assertion
+    // stays to pin the edge.
+    const creator = mountCreator(
+      ref(wp({ _links: { ...wp()._links, project: { href: '/api/v3/projects/99' } } }))
+    )
+    await flush()
+    creator.startCreating()
+    await flush()
+    expect(creator.projectId.value).toBeNull()
+  })
+
+  it('resets the project to blank on re-enter, carrying nothing over', async () => {
     const selected = ref<WorkPackage | null>(wp())
     const creator = mountCreator(selected)
     await flush()
@@ -230,17 +246,6 @@ describe('useWorkPackageCreator — entering and leaving create mode', () => {
     creator.projectId.value = 12
     await flush()
     creator.cancelCreating()
-    creator.startCreating()
-    await flush()
-    expect(creator.projectId.value).toBe(12)
-  })
-
-  it('ignores a project the key cannot create in', async () => {
-    // The selected work package lives in a project that isn't in the list.
-    const creator = mountCreator(
-      ref(wp({ _links: { ...wp()._links, project: { href: '/api/v3/projects/99' } } }))
-    )
-    await flush()
     creator.startCreating()
     await flush()
     expect(creator.projectId.value).toBeNull()
@@ -820,13 +825,17 @@ describe('useWorkPackageCreator — defaults on entering create mode', () => {
     expect(creator.draft.value.typeId).toBe(1)
     expect(creator.draft.value.assigneeId).toBe(11)
 
-    // Leave and come back. The project is unchanged, so the form query never
-    // refetches and `form.value` never changes.
+    // Leave and come back. The project resets to blank on re-enter, so it is
+    // picked again — the form query for project 7 is cached, so `form.value`
+    // never changes, which is exactly what makes the
+    // defaults-only-on-data-change regression reappear without the `isCreating`
+    // keying.
     creator.cancelCreating()
     await flush()
     expect(creator.draft.value.typeId).toBeNull()
 
     creator.startCreating()
+    creator.projectId.value = 7
     await flush()
 
     expect(creator.draft.value.typeId).toBe(1)
@@ -835,14 +844,18 @@ describe('useWorkPackageCreator — defaults on entering create mode', () => {
     expect(creator.draft.value.assigneeId).toBe(11)
   })
 
-  it('fills them on the first create when the project comes from the selected row', async () => {
+  it('fills the defaults once a project is chosen, seeding nothing from the selected row', async () => {
     const creator = mountCreator(ref(wp()))
     await flush()
 
     creator.startCreating()
     await flush()
+    // No project is seeded from the selected work package any more.
+    expect(creator.projectId.value).toBeNull()
 
-    expect(creator.projectId.value).toBe(7)
+    creator.projectId.value = 7
+    await flush()
+
     expect(creator.draft.value.typeId).toBe(1)
     expect(creator.draft.value.assigneeId).toBe(11)
   })

@@ -280,9 +280,18 @@ export type AllowedValue = z.infer<typeof AllowedValueSchema>
 export type WorkPackageFormField = z.infer<typeof WorkPackageFormFieldSchema>
 export type WorkPackageForm = z.infer<typeof WorkPackageFormSchema>
 
-/** A property is writable only if the server said so, in so many words. */
+/**
+ * A property is writable unless the server explicitly said otherwise.
+ *
+ * OpenProject's form schema defaults `writable` to `true` — a property that
+ * omits the key is writable, and only an explicit `writable: false` (e.g.
+ * `lockVersion`, or dates derived from child work packages) is not. Requiring
+ * `=== true` disabled any field whose response left the key off, so a live
+ * create form that omitted `writable` on `description` greyed it out.
+ */
 function isWritable(property: z.infer<typeof FormPropertySchema> | undefined): boolean {
-  return property?.writable === true
+  if (!property) return false
+  return property.writable !== false
 }
 
 /**
