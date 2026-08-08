@@ -36,6 +36,16 @@ Invariants specific to the write path:
 
 `listAvailableAssignees` takes a **`projectId`**, not a work package id. See [OpenProject Response Shapes](/domains/openproject-response-shapes.md#the-work-package-form-endpoint) for why.
 
+## Work-package create surface
+`listProjects`, `getWorkPackageCreateForm` and `createWorkPackage` add creation. Same numeric-ids-only trust model again, with four differences from the edit trio:
+
+- **No `lockVersion` anywhere.** Nothing exists yet to be stale against, so the create form accepts an empty body and `createWorkPackage` sends no version. `OPENPROJECT_CONFLICT` cannot occur on this path.
+- **`null` is not accepted on `createWorkPackage`.** On an update `null` means *clear this field* and is distinct from an absent key; on a create there is nothing to clear, so an unset field is simply omitted and OpenProject applies its own default. Two spellings of "absent" is how the clear-vs-omit bug gets in.
+- **`description.format` is pinned in the main process** and never taken from the renderer, on both the create and the update path. Not defensive habit: a live instance accepted `format: "custom"` with an `html` of `<script>…</script>` and reported *no* validation error, so the server does not police it. `html` is never sent — it is the server's rendering of `raw`.
+- **`listProjects` reads `/api/v3/work_packages/available_projects`**, not `/api/v3/projects`. See [OpenProject Response Shapes](/domains/openproject-response-shapes.md#creating-a-work-package). An empty collection is a real answer — this key may create nowhere — not an error.
+
+`getWorkPackageCreateForm` is a POST that reads, like its edit sibling, and forwards only a `typeId` rebuilt in main as one href. It returns the same flattened non-HAL shape plus `defaults: { typeId, statusId, priorityId }` — OpenProject's own initial values, each `null` when the form offered none. Prefilling from those is why only project/type/subject gate the Create button.
+
 ## Shell surface
 `openWorkPackageInBrowser({ workPackageId })` is the one channel that hands a URL to the **operating system** rather than to OpenProject. It is on a separate `op:shell:*` channel prefix, handled by `src/main/ipc/shell.ts`, and makes no HTTP request at all.
 
@@ -46,6 +56,11 @@ Invariants specific to the write path:
 - Codes: `SHELL_INVALID_INPUT`, `SHELL_UNSAFE_TARGET`, `SHELL_OPEN_FAILED`, plus `CREDENTIAL_NOT_CONFIGURED` when no usable URL is stored.
 
 `toIpcError()` passes an already-constructed `IpcError` through unchanged, which is what lets a handler raise its own typed code without it being flattened to `OPENPROJECT_UNKNOWN`.
+
+## Identity
+`getCurrentUser()` (`GET /api/v3/users/me`) returns the `Principal` the stored key authenticates as. **It takes no input, and that is the security property** — the identity is the key's, so there is nothing for the renderer to name and no value that could steer the request.
+
+Used only to default the create form's assignee, and the id is matched against `listAvailableAssignees` before it is applied: the key's owner is not necessarily a member of every project they can create in, and an id with no matching option would render a blank select that the create is then refused for. Not being assignable is ordinary — the fallback is unassigned and silent, and a failed identity lookup costs the default, never the create.
 
 ## Credential read-back
 There is still no getter for the API key. `getConnectionInfo()` returns only `{ baseUrl, hasApiKey }` — the URL is not secret, `hasApiKey` is presence only — so the settings form can prefill what's configured without the key ever crossing IPC. Consequently `apiKey` is **optional** on `saveCredentials` and `testConnection`: blank means "use/keep the stored key", resolved inside the main process. A blank key with nothing stored is a validation error.

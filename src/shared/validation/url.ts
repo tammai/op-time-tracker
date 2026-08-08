@@ -48,6 +48,31 @@ export function validateOpenProjectBaseUrl(input: string): UrlValidationResult {
 }
 
 /**
+ * Whether `input` is a link we are willing to put in a document.
+ *
+ * Narrower than it looks like it needs to be, and deliberately: a description is
+ * rendered back as rich text with clickable anchors, so a `javascript:` href
+ * typed into the link dialog would execute on click, and `file:` would reach the
+ * user's disk. Only `http(s)` earns an anchor.
+ *
+ * Bare `example.com` is rejected rather than guessed at — silently prefixing
+ * `https://` would turn a typo into a link to somewhere the user didn't name.
+ * The dialog says so instead.
+ */
+export function isSafeLinkHref(input: string): boolean {
+  const trimmed = (input ?? '').trim()
+  if (trimmed.length === 0) return false
+  let parsed: URL
+  try {
+    parsed = new URL(trimmed)
+  } catch {
+    return false
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
+  return parsed.hostname.length > 0
+}
+
+/**
  * Zod schema encoding the same http(s) rule as `validateOpenProjectBaseUrl`.
  *
  * Used by the onboarding form and the credential save path so that both

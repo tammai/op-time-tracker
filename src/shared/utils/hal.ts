@@ -48,6 +48,36 @@ export const GROUP_PATH = '/api/v3/groups'
 export const PLACEHOLDER_USER_PATH = '/api/v3/placeholder_users'
 
 /**
+ * A HAL Formattable (`description`, `comment`), in whichever of its three
+ * spellings arrived: the `{format, raw, html}` object a current instance sends,
+ * a bare string on older ones, or `null` for an empty value.
+ *
+ * Structural rather than derived from a Zod schema, because it is read on both
+ * sides of the bridge and `src/shared/` may not import from `src/main/`. The
+ * canonical schema is `FormattableSchema` in `src/main/schemas/work-packages.ts`,
+ * whose inferred type is assignable to this one.
+ */
+export type HalFormattable =
+  | { format?: string; raw?: string | null; html?: string | null }
+  | string
+  | null
+
+/**
+ * The raw text of a Formattable.
+ *
+ * Lives here so the edit draft can be seeded from a work package's description
+ * without the renderer re-deriving "which of the three shapes is this" at every
+ * call site — the same reason `parseHoursToDecimal` is shared rather than
+ * duplicated. `html` is deliberately never read: it is the server's rendering
+ * of `raw`, and the editor writes `raw`.
+ */
+export function formattableRaw(value: HalFormattable | undefined): string {
+  if (value === undefined || value === null) return ''
+  if (typeof value === 'string') return value
+  return value.raw ?? ''
+}
+
+/**
  * Parse a resource id out of a HAL href under `collectionPath`.
  *
  * The trailing segment is validated as a positive integer rather than

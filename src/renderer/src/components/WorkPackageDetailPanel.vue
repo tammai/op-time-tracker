@@ -2,6 +2,11 @@
 import { computed } from 'vue'
 import type { WorkPackage } from '@opentracker/preload'
 
+import { formattableRaw } from '@shared/utils/hal'
+import {
+  pendingActionPrompt,
+  type PendingAction
+} from '@renderer/composables/useWorkPackagesBrowser'
 import type { useWorkPackageEditor } from '@renderer/composables/useWorkPackageEditor'
 import {
   NO_DUE_DATE_LABEL,
@@ -47,14 +52,14 @@ const props = defineProps<{
   editor: WorkPackageEditor
   /**
    * An action the user asked for that unsaved edits are holding up — switching
-   * rows, or closing the screen.
+   * rows, closing the screen, or starting a new work package.
    *
    * Owned by `useWorkPackagesBrowser()`, not the editor, because the *list*
    * raises it. It is rendered here because the actions bar is where the
    * decision belongs: a second strip below the bar asked the question in one
    * place while Cancel and Save still offered contradictory answers in another.
    */
-  pendingAction?: { kind: 'select' | 'close' } | null
+  pendingAction?: PendingAction | null
 }>()
 
 const emit = defineEmits<{
@@ -84,11 +89,9 @@ const emit = defineEmits<{
  * unguessable. Nothing here restates what the UI already shows.
  */
 const statusMessage = computed<string | null>(() => {
-  if (props.pendingAction) {
-    return props.pendingAction.kind === 'close'
-      ? 'You have unsaved changes. Close anyway and discard them?'
-      : 'You have unsaved changes. Switch work package and discard them?'
-  }
+  // Wording lives with the type, so both panels ask the same question in the
+  // same words whichever one is on screen when it is raised.
+  if (props.pendingAction) return pendingActionPrompt(props.pendingAction)
   if (props.editor.isConflicted.value) {
     return 'Changed in OpenProject since you opened it — reload to continue.'
   }
@@ -99,11 +102,23 @@ const statusMessage = computed<string | null>(() => {
   return null
 })
 
+/**
+ * Only a refusal that already happened is an error. A pending question, a stale
+ * revision and a still-unfilled required field are all things the user can act
+ * on right now, so they share the warning colour.
+ */
 const statusClass = computed(() =>
-  props.pendingAction || props.editor.isConflicted.value
-    ? 'text-warning'
-    : 'text-error'
+  props.editor.saveError.value && !props.pendingAction && !props.editor.isConflicted.value
+    ? 'text-error'
+    : 'text-warning'
 )
+
+/**
+ * The description as raw text, whichever Formattable spelling the instance
+ * sent. Read through the shared helper rather than off `.raw`, so the read view
+ * and the draft that edits it can never disagree about what "empty" means.
+ */
+const description = computed(() => formattableRaw(props.workPackage.description))
 </script>
 
 <template>
@@ -111,38 +126,52 @@ const statusClass = computed(() =>
        hold the unsaved-changes strip below this panel; `h-full` would claim the
        pane's whole height regardless and push that strip out of view. -->
   <div class="flex min-h-0 flex-1 flex-col">
-    <!-- Header: the id leads, as it does everywhere else in this app — it is
-         what a user looks up in OpenProject itself. The subject stays here in
-         both modes; while editing it is also a field below, which is the one
-         duplication worth keeping — the heading is how you know which work
-         package you are renaming. -->
-    <div class="flex min-w-0 flex-col gap-1 p-4">
-      <!-- The open-in-OpenProject action sits with the id rather than in the
-           actions bar: it is a property of *this work package* — the same thing
-           the id identifies — not a decision about the edit in progress, which
-           is what the bar below is for. -->
-      <div class="flex items-center gap-1">
-        <span class="text-muted text-xs font-normal tabular-nums">
-          #{{ props.workPackage.id }}
-        </span>
-        <UTooltip text="Open in OpenProject">
-          <UButton
-            color="neutral"
-            variant="ghost"
-            size="xs"
-            icon="i-lucide-square-arrow-out-up-right"
-            :loading="props.opening"
-            :aria-label="`Open work package #${props.workPackage.id} in OpenProject`"
-            @click="emit('openInBrowser', props.workPackage.id)"
-          />
-        </UTooltip>
-      </div>
-      <h2 class="text-base font-semibold text-highlighted break-words">
-        {{ props.workPackage.subject }}
-      </h2>
-    </div>
+    <div class="min-h-0 flex-1 overflow-y-auto">
+      <!-- Header: the id leads, as it does everywhere else in this app — it is
+           what a user looks up in OpenProject itself. The subject stays here in
+           both modes; while editing it is also a field below, which is the one
+           duplication worth keeping — the heading is how you know which work
+           package you are renaming.
 
-    <div class="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
+           Inside the scroll container and `sticky`, rather than a sibling above
+           it: a long description scrolls *under* the subject instead of past
+           it, so which work package you are reading stays answerable at the
+           bottom of the field list.
+
+           A translucent background plus `backdrop-blur` rather than a solid
+           fill — the content passing beneath stays suggested rather than
+           clipped, which is what makes the header read as floating over the
+           list instead of covering it. The tint is still needed: blur alone
+           leaves text legible enough to compete with the subject. -->
+      <div
+        class="sticky top-0 z-10 flex min-w-0 flex-col gap-1 bg-default/75 px-4 pt-4 pb-2 backdrop-blur"
+      >
+        <!-- The open-in-OpenProject action sits with the id rather than in the
+             actions bar: it is a property of *this work package* — the same
+             thing the id identifies — not a decision about the edit in
+             progress, which is what the bar below is for. -->
+        <div class="flex items-center gap-1">
+          <span class="text-muted text-xs font-normal tabular-nums">
+            #{{ props.workPackage.id }}
+          </span>
+          <UTooltip text="Open in OpenProject">
+            <UButton
+              color="neutral"
+              variant="ghost"
+              size="xs"
+              icon="i-lucide-square-arrow-out-up-right"
+              :loading="props.opening"
+              :aria-label="`Open work package #${props.workPackage.id} in OpenProject`"
+              @click="emit('openInBrowser', props.workPackage.id)"
+            />
+          </UTooltip>
+        </div>
+        <h2 class="text-base font-semibold text-highlighted break-words">
+          {{ props.workPackage.subject }}
+        </h2>
+      </div>
+
+      <div class="px-4 pb-4">
       <!-- Fields. A description list rather than a table: these are label/value
            pairs, and `dl` is what a screen reader expects for them. The grid
            mirrors the edit form exactly — same four columns, same field order,
@@ -232,7 +261,40 @@ const statusClass = computed(() =>
           </dd>
         </div>
 
+        <!-- Description, full width and last, mirroring the edit form. Shown
+             only when there is one: an empty tile spanning the whole pane says
+             less than the space it takes.
+
+             Rendered by the same `UEditor`, read-only, from the same **raw
+             markdown** the field edits — so what you read is what you would be
+             editing, parsed by one parser rather than two that can disagree.
+
+             Emphatically *not* `description.html`. OpenProject returns a
+             rendered copy, but the Stage 3 probe established that the instance
+             accepts an arbitrary `format` and script-bearing `html` without
+             objection — so that field is attacker-influenceable and putting it
+             through `v-html` would be an XSS. Parsing the markdown ourselves
+             has no such hole. -->
+        <div
+          v-if="description"
+          class="col-span-4 flex min-w-0 flex-col rounded-md bg-elevated p-2"
+        >
+          <dt class="text-muted text-xs">Description</dt>
+          <dd class="text-highlighted min-w-0 break-words">
+            <!-- `sm:px-0` cancels the editor's own `sm:px-8`, which is meant
+                 for a full-width document surface and here just indents the
+                 description away from every other field on the tile. -->
+            <UEditor
+              :model-value="description"
+              content-type="markdown"
+              :editable="false"
+              class="w-full"
+              :ui="{ base: 'sm:px-0 *:my-2 [&_p]:leading-normal' }"
+            />
+          </dd>
+        </div>
       </dl>
+      </div>
     </div>
 
     <!-- Actions, pinned to the bottom of the pane. `shrink-0` keeps the bar

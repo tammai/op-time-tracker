@@ -12,11 +12,14 @@ import {
 import { StatusCollectionSchema } from '~~/src/main/schemas/statuses'
 import { TimeEntrySchema } from '~~/src/main/schemas/time-entries'
 import { WorkPackageSchema } from '~~/src/main/schemas/work-packages'
+import { ProjectCollectionSchema } from '~~/src/main/schemas/projects'
 import statusesFixture from '~~/tests/fixtures/statuses-collection.json'
 import timeEntriesFixture from '~~/tests/fixtures/time-entries-collection.json'
 import workPackagesFixture from '~~/tests/fixtures/work-packages-collection.json'
 import workPackageFormFixture from '~~/tests/fixtures/work-package-form.json'
 import assigneesFixture from '~~/tests/fixtures/available-assignees-collection.json'
+import projectsFixture from '~~/tests/fixtures/projects-collection.json'
+import createFormFixture from '~~/tests/fixtures/work-package-create-form.json'
 
 describe('buildRequestUrl', () => {
   describe('path joining', () => {
@@ -1949,6 +1952,496 @@ describe('updateWorkPackage', () => {
         expect(message).not.toContain(API_KEY)
         expect(message).not.toContain(EXPECTED_AUTH)
       }
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Stage 3 — creating a work package
+// ---------------------------------------------------------------------------
+
+const CREATE_BASE_URL = 'https://openproject.example.com'
+const CREATE_API_KEY = 'unit-test-api-key'
+const CREATE_AUTH = `Basic ${Buffer.from(`apikey:${CREATE_API_KEY}`).toString('base64')}`
+const createClient = () =>
+  new OpenProjectClient({ baseUrl: CREATE_BASE_URL, apiKey: CREATE_API_KEY })
+
+describe('listProjects', () => {
+  /**
+   * Not `GET /api/v3/projects`. That collection includes projects the key can
+   * *see* but not create in — one such project was on the probed instance, and
+   * offering it would produce a create that fails after the form is filled in.
+   * The create form's own `project` allowed-values href points at
+   * `available_projects`; the path is rebuilt here from a constant rather than
+   * followed off the response (PLAN.md, "Verified API shapes — Stage 3").
+   */
+  it('GETs the available-projects collection, not the visible-projects one', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify(projectsFixture), { status: 200 })
+      )
+      const result = await createClient().listProjects()
+
+      const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+      expect(url.pathname).toBe('/api/v3/work_packages/available_projects')
+      expect(init.method ?? 'GET').toBe('GET')
+      expect((init.headers as Record<string, string>).Authorization).toBe(CREATE_AUTH)
+      expect(result).toEqual(ProjectCollectionSchema.parse(projectsFixture))
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('caps the page size it is willing to fetch and parse', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify(projectsFixture), { status: 200 })
+      )
+      await createClient().listProjects()
+      const [url] = fetchMock.mock.calls[0] as [URL]
+      expect(Number(url.searchParams.get('pageSize'))).toBeLessThanOrEqual(MAX_PAGE_SIZE)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('surfaces a malformed collection as a schema error, not a crash', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ _type: 'Collection' }), { status: 200 })
+      )
+      await expect(createClient().listProjects()).rejects.toMatchObject({
+        code: 'OPENPROJECT_SCHEMA_FAILED'
+      })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
+describe('getWorkPackageCreateForm', () => {
+  it('POSTs the project-scoped form endpoint and returns the normalized form', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify(createFormFixture), { status: 200 })
+      )
+      const form = await createClient().getWorkPackageCreateForm({ projectId: 7 })
+
+      const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+      expect(url.href).toBe(
+        `${CREATE_BASE_URL}/api/v3/projects/7/work_packages/form`
+      )
+      expect(init.method).toBe('POST')
+      expect((init.headers as Record<string, string>)['Content-Type']).toBe(
+        'application/json'
+      )
+
+      expect(form.type.allowedValues).toEqual([
+        { id: 1, name: 'Task' },
+        { id: 7, name: 'Bug' }
+      ])
+      expect(form.defaults).toEqual({ typeId: 1, statusId: 1, priorityId: 8 })
+      // Flattened out of HAL before it crosses IPC.
+      expect(JSON.stringify(form)).not.toContain('href')
+      expect(JSON.stringify(form)).not.toContain('_embedded')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  /**
+   * Unlike the *edit* form, this endpoint takes no lock version — an empty body
+   * answers 200 on a real instance. That is what keeps the POST a read: with no
+   * type chosen there is nothing in the body at all.
+   */
+  it('sends an empty body when no type is chosen', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify(createFormFixture), { status: 200 })
+      )
+      await createClient().getWorkPackageCreateForm({ projectId: 7 })
+      const [, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+      expect(JSON.parse(init.body as string)).toEqual({})
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('sends only a type href rebuilt from the validated id, and nothing else', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify(createFormFixture), { status: 200 })
+      )
+      await createClient().getWorkPackageCreateForm({
+        projectId: 7,
+        typeId: 1,
+        // Everything a hostile renderer might append. None may be forwarded —
+        // a form POST that carried renderer content would be a write primitive.
+        subject: 'pwned',
+        description: { format: 'textile', raw: 'x' },
+        _links: { project: { href: '/api/v3/projects/999' } }
+      } as unknown as Parameters<OpenProjectClient['getWorkPackageCreateForm']>[0])
+
+      const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+      expect(url.href).toBe(`${CREATE_BASE_URL}/api/v3/projects/7/work_packages/form`)
+      expect(JSON.parse(init.body as string)).toEqual({
+        _links: { type: { href: '/api/v3/types/1' } }
+      })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('rejects a bad project or type id before making any request', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      for (const input of [
+        { projectId: 0 },
+        { projectId: -1 },
+        { projectId: 1.5 },
+        { projectId: '7' },
+        { projectId: '7/../../work_packages' },
+        { projectId: 7, typeId: 0 },
+        { projectId: 7, typeId: '1' }
+      ]) {
+        await expect(
+          createClient().getWorkPackageCreateForm(
+            input as unknown as Parameters<
+              OpenProjectClient['getWorkPackageCreateForm']
+            >[0]
+          )
+        ).rejects.toMatchObject({ code: 'OPENPROJECT_INVALID_INPUT' })
+      }
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('maps a 404 (project gone, or invisible to this key) to a not-found error', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      fetchMock.mockResolvedValueOnce(new Response('{}', { status: 404 }))
+      await expect(
+        createClient().getWorkPackageCreateForm({ projectId: 999 })
+      ).rejects.toMatchObject({ code: 'OPENPROJECT_NOT_FOUND' })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('surfaces a malformed form body as a schema error, not a crash', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      fetchMock.mockResolvedValueOnce(new Response('"not an object"', { status: 200 }))
+      await expect(
+        createClient().getWorkPackageCreateForm({ projectId: 7 })
+      ).rejects.toMatchObject({ code: 'OPENPROJECT_SCHEMA_FAILED' })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
+describe('createWorkPackage', () => {
+  const created = {
+    ...workPackagesFixture._embedded.elements[0],
+    id: 99,
+    lockVersion: 0,
+    subject: 'Add a create form'
+  }
+
+  function createdOnce(fetchMock: ReturnType<typeof vi.fn>): void {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(created), {
+        status: 201,
+        headers: { 'content-type': 'application/json' }
+      })
+    )
+  }
+
+  it('POSTs the collection URL with the right headers and returns the parsed WP', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      createdOnce(fetchMock)
+      const result = await createClient().createWorkPackage({
+        projectId: 7,
+        typeId: 1,
+        subject: 'Add a create form'
+      })
+
+      expect(result).toEqual(WorkPackageSchema.parse(created))
+
+      const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+      expect(url.href).toBe(`${CREATE_BASE_URL}/api/v3/work_packages`)
+      expect(init.method).toBe('POST')
+      const headers = init.headers as Record<string, string>
+      expect(headers.Authorization).toBe(CREATE_AUTH)
+      expect(headers['Content-Type']).toBe('application/json')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  /**
+   * The security property of the whole write path: the renderer sends numbers,
+   * and every href in the body is built here from the validated ones. Nothing
+   * renderer-supplied reaches a path — in the URL or in the payload.
+   */
+  it('builds every _links href itself from the validated numeric ids', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      createdOnce(fetchMock)
+      await createClient().createWorkPackage({
+        projectId: 7,
+        typeId: 1,
+        subject: 'Add a create form',
+        statusId: 1,
+        priorityId: 8,
+        assigneeId: 11
+      })
+      const [, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+      const body = JSON.parse(init.body as string) as Record<string, unknown>
+      expect(body._links).toEqual({
+        project: { href: '/api/v3/projects/7' },
+        type: { href: '/api/v3/types/1' },
+        status: { href: '/api/v3/statuses/1' },
+        priority: { href: '/api/v3/priorities/8' },
+        assignee: { href: '/api/v3/users/11' }
+      })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  /**
+   * A live instance accepted `format: "custom"` with an `html` of
+   * `<script>alert(1)</script>` and reported *no* validation error, so the
+   * server is not the boundary. The format is a main-process constant, and an
+   * `html` the renderer authored is never forwarded.
+   */
+  it('pins the description format in the main process', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      createdOnce(fetchMock)
+      await createClient().createWorkPackage({
+        projectId: 7,
+        typeId: 1,
+        subject: 'Add a create form',
+        description: 'Body **text**',
+        // A renderer trying to choose the format, or to inject rendered HTML.
+        ...({
+          descriptionFormat: 'textile',
+          descriptionHtml: '<script>alert(1)</script>'
+        } as Record<string, unknown>)
+      })
+      const [, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+      const body = JSON.parse(init.body as string) as Record<string, unknown>
+      expect(body.description).toEqual({ format: 'markdown', raw: 'Body **text**' })
+      expect(init.body as string).not.toContain('textile')
+      expect(init.body as string).not.toContain('<script>')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('rejects invalid input before making any request', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      for (const input of [
+        { typeId: 1, subject: 'x' },
+        { projectId: 7, subject: 'x' },
+        { projectId: 7, typeId: 1 },
+        { projectId: 7, typeId: 1, subject: '   ' },
+        { projectId: 7, typeId: 1, subject: 'x'.repeat(256) },
+        { projectId: '7', typeId: 1, subject: 'x' },
+        { projectId: 7, typeId: 1, subject: 'x', assigneeId: 0 },
+        { projectId: 7, typeId: 1, subject: 'x', startDate: '2026-02-31' }
+      ]) {
+        await expect(
+          createClient().createWorkPackage(
+            input as unknown as Parameters<OpenProjectClient['createWorkPackage']>[0]
+          )
+        ).rejects.toMatchObject({ code: 'OPENPROJECT_INVALID_INPUT' })
+      }
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  /**
+   * The 422 the create form cannot predict — a required custom field, a type
+   * the project stopped allowing. OpenProject's own message is the only useful
+   * thing to show, so it is forwarded (only the schema-declared `message`
+   * fields, capped) while the raw body never is.
+   */
+  it('maps HTTP 422 to a validation error carrying only the server message', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const body = JSON.stringify({
+        _type: 'Error',
+        errorIdentifier: 'urn:openproject-org:api:v3:errors:PropertyConstraintViolation',
+        message: 'Multiple field constraints have been violated.',
+        _embedded: {
+          errors: [{ message: 'Team can’t be blank.' }],
+          details: { attribute: 'customField1' },
+          // Echoed request content — must never reach the renderer.
+          payload: { subject: 'must-not-leak' }
+        }
+      })
+
+      fetchMock.mockResolvedValueOnce(new Response(body, { status: 422 }))
+      await expect(
+        createClient().createWorkPackage({ projectId: 7, typeId: 1, subject: 'x' })
+      ).rejects.toMatchObject({ code: 'OPENPROJECT_VALIDATION_FAILED', status: 422 })
+
+      fetchMock.mockResolvedValueOnce(new Response(body, { status: 422 }))
+      const message = await createClient()
+        .createWorkPackage({ projectId: 7, typeId: 1, subject: 'must-not-leak' })
+        .catch((e: Error) => e.message)
+
+      expect(message).toContain('Multiple field constraints have been violated.')
+      expect(message).toContain('Team can’t be blank.')
+      // The echoed request content the body also carried must not survive.
+      expect(message).not.toContain('must-not-leak')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('maps 403 and 5xx on the create path, and never leaks the key', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      for (const [status, code] of [
+        [403, 'OPENPROJECT_AUTH_FAILED'],
+        [404, 'OPENPROJECT_NOT_FOUND'],
+        [500, 'OPENPROJECT_SERVER_ERROR']
+      ] as const) {
+        fetchMock.mockResolvedValueOnce(new Response('{}', { status }))
+        await expect(
+          createClient().createWorkPackage({ projectId: 7, typeId: 1, subject: 'x' })
+        ).rejects.toMatchObject({ code })
+
+        fetchMock.mockResolvedValueOnce(new Response('{}', { status }))
+        const message = await createClient()
+          .createWorkPackage({ projectId: 7, typeId: 1, subject: 'x' })
+          .catch((e: Error) => e.message)
+        expect(message).not.toContain(CREATE_API_KEY)
+        expect(message).not.toContain(CREATE_AUTH)
+      }
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('maps an unexpected 201 response shape to a schema error', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: 99 }), { status: 201 })
+      )
+      await expect(
+        createClient().createWorkPackage({ projectId: 7, typeId: 1, subject: 'x' })
+      ).rejects.toMatchObject({ code: 'OPENPROJECT_SCHEMA_FAILED' })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
+describe('getCurrentUser', () => {
+  const BASE_URL = 'https://openproject.example.com'
+  const API_KEY = 'unit-test-api-key'
+  const client = () => new OpenProjectClient({ baseUrl: BASE_URL, apiKey: API_KEY })
+
+  /** `/users/me` answers a bare User resource, not a collection. */
+  const ME = { _type: 'User', id: 27, name: 'Tam Mai' }
+
+  it('GETs /api/v3/users/me and returns the parsed principal', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(ME), { status: 200 }))
+
+      const result = await client().getCurrentUser()
+
+      const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+      expect(url.pathname).toBe('/api/v3/users/me')
+      expect(init.method ?? 'GET').toBe('GET')
+      expect(result.id).toBe(27)
+      expect(result.name).toBe('Tam Mai')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('takes no renderer input at all, so nothing can steer the path', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(ME), { status: 200 }))
+      // Called with no arguments by construction — the identity is the API
+      // key's, never something the renderer names.
+      expect(client().getCurrentUser.length).toBe(0)
+      await client().getCurrentUser()
+      const [url] = fetchMock.mock.calls[0] as [URL]
+      expect(url.pathname).toBe('/api/v3/users/me')
+      expect(url.search).toBe('')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('maps an unexpected response shape to a schema error', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ nope: true }), { status: 200 })
+      )
+      await expect(client().getCurrentUser()).rejects.toMatchObject({
+        code: 'OPENPROJECT_SCHEMA_FAILED'
+      })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('surfaces an auth failure as a typed error, not a raw body', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ message: 'nope' }), { status: 401 })
+      )
+      await expect(client().getCurrentUser()).rejects.toMatchObject({
+        code: 'OPENPROJECT_AUTH_FAILED'
+      })
     } finally {
       vi.unstubAllGlobals()
     }

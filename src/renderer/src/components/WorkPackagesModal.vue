@@ -14,21 +14,23 @@ import {
   workPackageStatusLabel
 } from '@renderer/utils/work-package-display'
 import WorkPackageDetailPanel from './WorkPackageDetailPanel.vue'
+import WorkPackageCreatePanel from './WorkPackageCreatePanel.vue'
 
 /**
- * The work-packages browse screen: a full-screen modal with a master-detail
- * layout — searchable list on the left, read-only detail panel on the right,
- * divided by a single flush rule.
+ * The work-packages screen: a full-screen modal with a master-detail layout —
+ * searchable list on the left, detail pane on the right, divided by a single
+ * flush rule. The pane reads by default, edits on request, and is taken over by
+ * the create form when New is pressed.
  *
  * A modal over the calendar rather than a second view, so the calendar stays
  * mounted underneath and `useMonthTimeEntries()` isn't torn down and refetched
  * every time this closes.
  *
- * This component owns **no** list state. Everything — the query, the search
- * term, the filter, the selection — lives in `useWorkPackagesBrowser()`, and
- * the detail panel is its own component. That split is what lets stage 2 (edit)
- * and stage 3 (create) land as a change to the panel plus a mutation, without
- * reopening this file or the list beside it.
+ * This component owns **no** state. Everything — the query, the search term, the
+ * filter, the selection, the editor and the creator — lives in
+ * `useWorkPackagesBrowser()`, and each pane is its own component. That split is
+ * what let edit and create land as a panel plus a mutation each: this file
+ * gained one button and one `v-if` across both stages.
  *
  * Conventions: no direct `window.openproject.*` calls — the list comes from the
  * composable, and even the open-in-browser action routes through it
@@ -87,7 +89,9 @@ const {
   selectedWorkPackage,
   select,
   editor,
+  creator,
   pendingAction,
+  requestCreate,
   requestClose,
   discardPendingAction,
   keepEditing,
@@ -98,11 +102,28 @@ const {
 const toast = useToast()
 
 // A search the user walked away from shouldn't be waiting for them on their
-// way back in. The status filter and the selection are deliberately kept —
-// those read as settings, not as a transient query.
+// way back in, and neither should a half-started create — by the time the
+// screen closes, either the draft was empty or the confirm above already asked
+// about it. The status filter and the selection are deliberately kept: those
+// read as settings, not as a transient query.
 watch(open, (isOpen) => {
-  if (!isOpen) resetSearch()
+  if (!isOpen) {
+    resetSearch()
+    creator.cancelCreating()
+  }
 })
+
+/**
+ * Why the New action isn't available, shown as a line rather than as the
+ * button's tooltip.
+ *
+ * Not a style preference: `UTooltip` puts its trigger on the button element
+ * itself, and a disabled `<button>` fires neither `pointerenter` nor `focus`, so
+ * a reason living in the tooltip would be unreachable exactly when it matters.
+ * It earns its line on the same terms as the degraded-status notice beside it —
+ * it reports a real fact about the instance that nothing else here surfaces.
+ */
+const createBlockedReason = computed(() => creator.startBlockedReason.value)
 
 /**
  * Open a work package in the system browser.
@@ -160,7 +181,7 @@ const truncationNotice = computed(
     v-model:open="modalOpen"
     fullscreen
     title="Work packages"
-    description="Browse your work packages and open one in OpenProject."
+    description="Browse, create and edit your work packages."
     :ui="{ body: 'flex min-h-0 gap-0 overflow-hidden p-0 sm:p-0' }"
   >
     <!-- The body slot's own theme classes are `flex-1 p-4 sm:p-6` plus
@@ -206,6 +227,27 @@ const truncationNotice = computed(
               :loading="isFetching"
               @click="() => refetch()"
             />
+            <!-- New sits with the list, not with the detail pane: it creates a
+                 row here, and the pane it opens into is where the fields live.
+                 The default (solid) variant, like Save and Edit — this is the
+                 one action on this screen that makes something, and the refresh
+                 button beside it is deliberately quieter.
+
+                 `requestCreate`, never `creator.startCreating()`: entering the
+                 create form with an unsaved edit open ends in that edit being
+                 discarded without anything having asked (a completed create
+                 reassigns the selection, which re-seeds the editor). The browser
+                 owns that question because it owns both halves. -->
+            <UTooltip text="New work package">
+              <UButton
+                color="primary"
+                size="md"
+                icon="i-lucide-plus"
+                aria-label="New work package"
+                :disabled="!creator.canStartCreating.value"
+                @click="requestCreate()"
+              />
+            </UTooltip>
           </div>
 
           <!-- Only the degraded-status case is worth a line here. That the
@@ -215,6 +257,13 @@ const truncationNotice = computed(
           <p v-if="isStatusFilterDegraded" class="text-muted text-xs">
             Status names couldn't be resolved on this instance, so this list
             isn't narrowed by status.
+          </p>
+
+          <!-- Why New is greyed out. See `createBlockedReason` — it cannot live
+               in the button's tooltip, because a disabled button never fires
+               the events that would open one. -->
+          <p v-if="createBlockedReason" class="text-muted text-xs">
+            {{ createBlockedReason }}
           </p>
         </div>
 
@@ -347,8 +396,19 @@ const truncationNotice = computed(
            dialog, matching how the day modal confirms a delete — a modal on top
            of a modal buries the thing it is asking about. -->
       <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+        <!-- Create takes the pane over rather than sitting beside the detail
+             view: it is the same pane answering a different question, and the
+             selection underneath is untouched — cancelling returns to it with
+             any edit in progress still intact. -->
+        <WorkPackageCreatePanel
+          v-if="creator.isCreating.value"
+          :creator="creator"
+          :pending-action="pendingAction"
+          @keep-editing="keepEditing()"
+          @discard-pending="onDiscardPending()"
+        />
         <WorkPackageDetailPanel
-          v-if="selectedWorkPackage"
+          v-else-if="selectedWorkPackage"
           :work-package="selectedWorkPackage"
           :opening="openingId === selectedWorkPackage.id"
           :editor="editor"

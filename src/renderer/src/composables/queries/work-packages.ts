@@ -7,10 +7,13 @@ import {
 } from '@pinia/colada'
 import { computed } from 'vue'
 import type {
+  CreateWorkPackageInput,
   OpenWorkPackageInBrowserInput,
   UpdateWorkPackageInput,
   WorkPackage,
   WorkPackageCollection,
+  WorkPackageCreateForm,
+  WorkPackageCreateFormInput,
   WorkPackageFilters,
   WorkPackageForm
 } from '@opentracker/preload'
@@ -117,6 +120,26 @@ export const workPackageQueries = {
   form: defineQueryOptions((params: { workPackageId: number; lockVersion: number }) => ({
     key: ['work-packages', 'form', params.workPackageId, params.lockVersion],
     query: () => window.openproject.getWorkPackageForm(params)
+  })),
+
+  /**
+   * The schema for a *new* work package in one project: which types, statuses
+   * and priorities are legal there, and which ones OpenProject would pick.
+   *
+   * **Keyed on the project**, which is the shape of the whole create flow —
+   * every allowed-value list is project-scoped, so a project change is a rekey
+   * and the new form is fetched with nothing to invalidate by hand.
+   *
+   * `typeId` is part of the key too, so an instance whose status workflows
+   * differ per type would rekey correctly the moment the creator starts sending
+   * one. It does not today: the probed instance returned identical allowed
+   * values with and without a type, and prefilling the form's *own* default type
+   * would immediately rekey the query it came from — blanking every select for a
+   * second round trip (PLAN.md, "Verified API shapes — Stage 3").
+   */
+  createForm: defineQueryOptions((params: WorkPackageCreateFormInput) => ({
+    key: ['work-packages', 'create-form', params.projectId, params.typeId ?? null],
+    query: () => window.openproject.getWorkPackageCreateForm(params)
   }))
 }
 
@@ -280,10 +303,43 @@ export function useUpdateWorkPackage() {
   })
 }
 
+/**
+ * Create a work package.
+ *
+ * Everything the draft holds is sent — there is no diff here, because there is
+ * no prior revision to diff against and an absent field simply takes
+ * OpenProject's default. That is the whole reason create is a separate mutation
+ * rather than a mode of `useUpdateWorkPackage`.
+ *
+ * Invalidation lives here rather than in a component, per
+ * `.opencode/rules/conventions-frontend.md`. The whole `['work-packages']`
+ * prefix goes: the new work package belongs in the browse list and in any
+ * cached search whose term it matches, and neither can know that without
+ * refetching. Nothing is invalidated on failure — a refused create changed
+ * nothing on the server, so no cached copy is stale.
+ *
+ * The `['projects']` and `['principals']` caches are deliberately left alone:
+ * creating a work package changes neither which projects exist nor who may be
+ * assigned in them.
+ */
+export function useCreateWorkPackage() {
+  const cache = useQueryCache()
+  return useMutation<WorkPackage, CreateWorkPackageInput>({
+    mutation: (input: CreateWorkPackageInput) =>
+      window.openproject.createWorkPackage(input),
+    onSuccess: () => {
+      cache.invalidateQueries({ key: ['work-packages'] })
+    }
+  })
+}
+
 export type {
+  CreateWorkPackageInput,
   UpdateWorkPackageInput,
   WorkPackage,
   WorkPackageCollection,
+  WorkPackageCreateForm,
+  WorkPackageCreateFormInput,
   WorkPackageFilters,
   WorkPackageForm
 }

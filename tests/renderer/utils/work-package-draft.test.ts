@@ -4,10 +4,15 @@ import type { Principal, WorkPackage } from '@opentracker/preload'
 import {
   diffWorkPackageDraft,
   emptyWorkPackageDraft,
+  hasCreateDraftContent,
   hasWorkPackageChanges,
+  resetProjectScopedFields,
   toAssigneeOptions,
+  toCreateWorkPackageInput,
   toFieldOptions,
+  toProjectOptions,
   toWorkPackageDraft,
+  workPackageCreateIssue,
   workPackageDraftIssue,
   workPackageProjectId,
   UNASSIGNED_OPTION_LABEL,
@@ -47,6 +52,7 @@ describe('toWorkPackageDraft', () => {
   it('reads every editable field off the work package', () => {
     expect(toWorkPackageDraft(wp())).toEqual({
       subject: 'Fix login bug',
+      description: '',
       startDate: '2026-01-15',
       dueDate: '2026-01-22',
       statusId: 3,
@@ -115,6 +121,7 @@ describe('emptyWorkPackageDraft', () => {
   it('starts with nothing set', () => {
     expect(emptyWorkPackageDraft()).toEqual({
       subject: '',
+      description: '',
       startDate: '',
       dueDate: '',
       statusId: null,
@@ -219,6 +226,7 @@ describe('diffWorkPackageDraft', () => {
   it('reports every field at once without losing the clear/omit distinction', () => {
     const changes = diffWorkPackageDraft(base, {
       subject: 'All of it',
+      description: base.description,
       startDate: '2026-05-01',
       dueDate: '',
       statusId: 9,
@@ -351,5 +359,289 @@ describe('toAssigneeOptions', () => {
     expect(toAssigneeOptions([], null)).toEqual([
       { label: UNASSIGNED_OPTION_LABEL, value: null }
     ])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Stage 3 — description, and the project-scoped reset
+// ---------------------------------------------------------------------------
+
+describe('description in the draft', () => {
+  it('reads the raw text out of whichever Formattable spelling arrived', () => {
+    expect(
+      toWorkPackageDraft(
+        wp({ description: { format: 'markdown', raw: 'Body', html: '<p>Body</p>' } })
+      ).description
+    ).toBe('Body')
+    expect(toWorkPackageDraft(wp({ description: 'Bare string' })).description).toBe(
+      'Bare string'
+    )
+    for (const description of [null, undefined]) {
+      expect(toWorkPackageDraft(wp({ description })).description).toBe('')
+    }
+  })
+
+  /**
+   * Never trimmed, unlike the subject: two trailing spaces are a line break in
+   * markdown, so trimming would rewrite the user's formatting on every save.
+   */
+  it('reports a description change without trimming the text', () => {
+    const base = emptyWorkPackageDraft()
+    const draft: WorkPackageDraft = { ...base, description: 'line one  \nline two' }
+    expect(diffWorkPackageDraft(base, draft).description).toBe('line one  \nline two')
+  })
+
+  it('omits an untouched description and sends an emptied one', () => {
+    const base: WorkPackageDraft = { ...emptyWorkPackageDraft(), description: 'Body' }
+
+    const untouched = diffWorkPackageDraft(base, { ...base })
+    expect(Object.prototype.hasOwnProperty.call(untouched, 'description')).toBe(false)
+
+    const cleared = diffWorkPackageDraft(base, { ...base, description: '' })
+    expect(Object.prototype.hasOwnProperty.call(cleared, 'description')).toBe(true)
+    expect(cleared.description).toBe('')
+  })
+
+  it('flags an over-long description before the request is made', () => {
+    const draft: WorkPackageDraft = {
+      ...emptyWorkPackageDraft(),
+      subject: 'Fine',
+      description: 'x'.repeat(30_001)
+    }
+    expect(workPackageDraftIssue(draft)).toMatch(/description cannot be longer/i)
+    expect(
+      workPackageDraftIssue({ ...draft, description: 'x'.repeat(30_000) })
+    ).toBeNull()
+  })
+})
+
+/**
+ * The reset that this whole stage turns on. Every allowed-value list is
+ * project-scoped, so a type/status/priority/assignee that survived a project
+ * change is a value the new project never offered — and the server does not
+ * refuse the *form* request for it, it answers 200 and buries the objection, so
+ * nothing else catches it.
+ */
+describe('resetProjectScopedFields', () => {
+  const filled: WorkPackageDraft = {
+    subject: 'Typed by the user',
+    description: 'Also typed',
+    startDate: '2026-03-01',
+    dueDate: '2026-03-14',
+    statusId: 3,
+    typeId: 1,
+    priorityId: 8,
+    assigneeId: 11
+  }
+
+  it('clears type, status, priority and assignee', () => {
+    const reset = resetProjectScopedFields(filled)
+    expect(reset.typeId).toBeNull()
+    expect(reset.statusId).toBeNull()
+    expect(reset.priorityId).toBeNull()
+    expect(reset.assigneeId).toBeNull()
+  })
+
+  it('keeps what the user typed — it means the same in any project', () => {
+    expect(resetProjectScopedFields(filled)).toMatchObject({
+      subject: 'Typed by the user',
+      description: 'Also typed',
+      startDate: '2026-03-01',
+      dueDate: '2026-03-14'
+    })
+  })
+
+  it('does not mutate the draft it was given', () => {
+    const before = { ...filled }
+    resetProjectScopedFields(filled)
+    expect(filled).toEqual(before)
+  })
+
+  /**
+   * The property that makes forgetting impossible rather than merely unlikely.
+   * The function names the fields to *keep*, so anything else in the draft —
+   * including a field added long after this was written — is reset by default.
+   * If this ever fails, a new field was added to the keep list without being
+   * project-independent, or the reset stopped starting from an empty draft.
+   */
+  it('resets every field it does not explicitly keep', () => {
+    const kept = new Set(['subject', 'description', 'startDate', 'dueDate'])
+    const reset = resetProjectScopedFields(filled) as unknown as Record<string, unknown>
+    const empty = emptyWorkPackageDraft() as unknown as Record<string, unknown>
+    for (const key of Object.keys(empty)) {
+      if (kept.has(key)) continue
+      expect(reset[key]).toEqual(empty[key])
+    }
+  })
+})
+
+describe('workPackageCreateIssue', () => {
+  const ready: WorkPackageDraft = {
+    ...emptyWorkPackageDraft(),
+    subject: 'Add a create form',
+    typeId: 1
+  }
+
+  it('passes once a project, a type and a subject are all present', () => {
+    expect(workPackageCreateIssue(7, ready)).toBeNull()
+  })
+
+  it('names the missing requirement, in the order the user meets them', () => {
+    expect(workPackageCreateIssue(null, ready)).toMatch(/project/i)
+    expect(workPackageCreateIssue(7, { ...ready, typeId: null })).toMatch(/type/i)
+    expect(workPackageCreateIssue(7, { ...ready, subject: '  ' })).toMatch(/subject/i)
+  })
+
+  it('still applies every ordinary draft rule', () => {
+    expect(workPackageCreateIssue(7, { ...ready, dueDate: 'nope' })).toMatch(/due date/i)
+    expect(
+      workPackageCreateIssue(7, {
+        ...ready,
+        startDate: '2026-03-14',
+        dueDate: '2026-03-01'
+      })
+    ).toMatch(/before the start date/i)
+  })
+})
+
+/**
+ * What counts as "a create draft worth confirming before discarding".
+ *
+ * Type, status and priority are prefilled from the create form the instant a
+ * project is picked, so counting them would raise the unsaved-changes confirm
+ * with no user input at all.
+ */
+describe('hasCreateDraftContent', () => {
+  it('is false for an untouched draft, and for one only the form filled in', () => {
+    expect(hasCreateDraftContent(emptyWorkPackageDraft())).toBe(false)
+    expect(
+      hasCreateDraftContent({
+        ...emptyWorkPackageDraft(),
+        typeId: 1,
+        statusId: 1,
+        priorityId: 8
+      })
+    ).toBe(false)
+  })
+
+  it('is true once the user has entered something of their own', () => {
+    const base = emptyWorkPackageDraft()
+    expect(hasCreateDraftContent({ ...base, subject: 'x' })).toBe(true)
+    expect(hasCreateDraftContent({ ...base, description: 'x' })).toBe(true)
+    expect(hasCreateDraftContent({ ...base, startDate: '2026-03-01' })).toBe(true)
+    expect(hasCreateDraftContent({ ...base, dueDate: '2026-03-01' })).toBe(true)
+    expect(hasCreateDraftContent({ ...base, assigneeId: 11 })).toBe(true)
+  })
+
+  it('ignores whitespace-only text', () => {
+    expect(
+      hasCreateDraftContent({
+        ...emptyWorkPackageDraft(),
+        subject: '   ',
+        description: '\n\n'
+      })
+    ).toBe(false)
+  })
+})
+
+/**
+ * Absence is the only way to say "not set" on a create — there is nothing to
+ * clear on a work package that does not exist yet, so `null` never appears.
+ */
+describe('toCreateWorkPackageInput', () => {
+  it('sends only project, type and subject for a minimal draft', () => {
+    const input = toCreateWorkPackageInput(7, 1, {
+      ...emptyWorkPackageDraft(),
+      subject: '  Add a create form  '
+    })
+    expect(input).toEqual({ projectId: 7, typeId: 1, subject: 'Add a create form' })
+  })
+
+  it('carries every field the user filled in', () => {
+    const input = toCreateWorkPackageInput(7, 1, {
+      subject: 'Add a create form',
+      description: 'Body **text**',
+      startDate: '2026-03-01',
+      dueDate: '2026-03-14',
+      statusId: 1,
+      typeId: 1,
+      priorityId: 8,
+      assigneeId: 11
+    })
+    expect(input).toEqual({
+      projectId: 7,
+      typeId: 1,
+      subject: 'Add a create form',
+      description: 'Body **text**',
+      startDate: '2026-03-01',
+      dueDate: '2026-03-14',
+      statusId: 1,
+      priorityId: 8,
+      assigneeId: 11
+    })
+  })
+
+  it('never emits a null — an unset field is simply absent', () => {
+    const input = toCreateWorkPackageInput(7, 1, {
+      ...emptyWorkPackageDraft(),
+      subject: 'x'
+    }) as Record<string, unknown>
+    for (const key of [
+      'description',
+      'statusId',
+      'priorityId',
+      'assigneeId',
+      'startDate',
+      'dueDate'
+    ]) {
+      expect(Object.prototype.hasOwnProperty.call(input, key)).toBe(false)
+    }
+    expect(Object.values(input)).not.toContain(null)
+  })
+
+  it('drops a whitespace-only description but preserves markdown whitespace', () => {
+    expect(
+      toCreateWorkPackageInput(7, 1, {
+        ...emptyWorkPackageDraft(),
+        subject: 'x',
+        description: '   \n '
+      })
+    ).not.toHaveProperty('description')
+    expect(
+      toCreateWorkPackageInput(7, 1, {
+        ...emptyWorkPackageDraft(),
+        subject: 'x',
+        description: 'line one  \nline two'
+      }).description
+    ).toBe('line one  \nline two')
+  })
+
+  it('sends the type it was given, not the one in the draft', () => {
+    // The caller has already established which type is legal; the draft is only
+    // where it happens to be stored.
+    const input = toCreateWorkPackageInput(7, 9, {
+      ...emptyWorkPackageDraft(),
+      subject: 'x',
+      typeId: 1
+    })
+    expect(input.typeId).toBe(9)
+  })
+})
+
+describe('toProjectOptions', () => {
+  it('maps projects to select options in server order', () => {
+    expect(
+      toProjectOptions([
+        { id: 7, name: 'Backend' },
+        { id: 12, name: 'Design System' }
+      ] as Parameters<typeof toProjectOptions>[0])
+    ).toEqual([
+      { label: 'Backend', value: 7 },
+      { label: 'Design System', value: 12 }
+    ])
+  })
+
+  it('is empty for a key that may create nowhere', () => {
+    expect(toProjectOptions([])).toEqual([])
   })
 })

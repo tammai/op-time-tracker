@@ -1,8 +1,12 @@
 <script setup lang="ts">
-import { computed, useId, type WritableComputedRef } from 'vue'
+import { computed, ref, shallowRef, useId, type WritableComputedRef } from 'vue'
 import { parseDate, type DateValue } from '@internationalized/date'
+import type { Editor as TiptapEditor } from '@tiptap/vue-3'
+
+import type { EditorToolbarItem } from '@nuxt/ui/components/EditorToolbar.vue'
 
 import { isCalendarDate } from '@shared/validation/calendar-date'
+import { isSafeLinkHref } from '@shared/validation/url'
 import type {
   EditableFieldState,
   WorkPackageFieldName
@@ -16,12 +20,18 @@ import type {
 /**
  * The editable field set of a work package.
  *
- * Its own component, and taking **data only** — a draft, four option lists, and
- * a per-field enabled/disabled verdict. It knows nothing about the work package
- * it came from, the form endpoint, saving, or HAL. That is what makes it
- * reusable rather than merely extracted: stage 3's create form mounts this same
- * component against `emptyWorkPackageDraft()` and options from the *create*
- * form endpoint, with no branch in here and no second copy of the layout.
+ * Its own component, and taking **data only** — a draft, the option lists, and a
+ * per-field enabled/disabled verdict. It knows nothing about the work package it
+ * came from, the form endpoint, saving, or HAL. That is what makes it reusable
+ * rather than merely extracted: stage 3's create form mounts this same component
+ * against `emptyWorkPackageDraft()` and options from the *create* form endpoint,
+ * with no second copy of the layout.
+ *
+ * One field does differ between the two, and it differs by data rather than by
+ * mode: the project is a select when `projectOptions` is passed and a disabled
+ * label when it isn't. That is the only branch in here, and it exists because
+ * the *edit* form genuinely offers no allowed values for the project — not
+ * because this component knows which caller it has.
  *
  * The grid deliberately mirrors the read view's description list — same two
  * columns, same rhythm — so entering edit mode doesn't reflow the panel under
@@ -36,6 +46,16 @@ import type {
 
 const draft = defineModel<WorkPackageDraft>('draft', { required: true })
 
+/**
+ * The project, when it is the user's to choose (create mode only).
+ *
+ * A model of its own rather than a draft field, because it is the *input* the
+ * other four selects are derived from rather than one of them — see
+ * `resetProjectScopedFields`. Edit mode never binds it and passes
+ * `projectLabel` instead.
+ */
+const projectId = defineModel<number | null>('projectId', { default: null })
+
 const props = defineProps<{
   fields: Record<WorkPackageFieldName, EditableFieldState>
   statusOptions: FieldOption[]
@@ -43,18 +63,27 @@ const props = defineProps<{
   priorityOptions: FieldOption[]
   assigneeOptions: AssigneeOption[]
   /**
-   * The work package's project, shown but not editable.
+   * The projects a work package may be created in. **Its presence is what
+   * switches the project cell from a label to a select** — passing it is how
+   * create mode says the field is live here.
    *
-   * Read-only because OpenProject's work-package form doesn't offer `project`
-   * at all — there are no allowed values to populate a select with, and moving
-   * a work package between projects re-derives which types, statuses and
-   * assignees are legal. It is here because the field belongs in this layout,
-   * not because it is half-implemented.
+   * Absent in edit mode, and deliberately so: OpenProject's *edit* form offers
+   * no allowed values for `project` at all, and moving a work package between
+   * projects re-derives which types, statuses and assignees are legal. Stage
+   * 2's read-only project stands.
+   */
+  projectOptions?: FieldOption[]
+  /**
+   * The work package's project, shown but not editable. Used when
+   * `projectOptions` is absent.
    */
   projectLabel?: string
   /** True while a save is in flight — everything locks, nothing is lost. */
   busy?: boolean
 }>()
+
+/** True when the project is a choice rather than a fact. */
+const isProjectEditable = computed(() => props.projectOptions !== undefined)
 
 // Unique per instance, so a second mount (stage 3's create form beside this
 // one) can't produce duplicate ids and steal the labels.
@@ -90,6 +119,14 @@ function optionalId(
 const typeId = optionalId('typeId')
 const statusId = optionalId('statusId')
 const priorityId = optionalId('priorityId')
+
+/** The same `null` ↔ `undefined` adapter, for the project model. */
+const projectValue = computed<number | undefined>({
+  get: () => projectId.value ?? undefined,
+  set: (value) => {
+    projectId.value = value ?? null
+  }
+})
 
 /**
  * Start and due date are **one** control — a range.
@@ -133,6 +170,97 @@ const dateField = computed<EditableFieldState>(() => {
   return { disabled: false, reason: null }
 })
 
+/**
+ * The description toolbar.
+ *
+ * Deliberately only what **markdown round-trips**. `UEditor` also offers
+ * underline, text alignment and colour; none of those survive serialisation to
+ * markdown, so a button for them would format text that silently reverts on
+ * save. The set here maps one-for-one onto CommonMark.
+ *
+ * `kind` is what binds a button to `UEditor`'s built-in handler — the component
+ * owns execute/isActive, so there is no editor plumbing in this file.
+ */
+const descriptionToolbar: EditorToolbarItem[][] = [
+  [
+    { kind: 'mark', mark: 'bold', icon: 'i-lucide-bold', 'aria-label': 'Bold' },
+    { kind: 'mark', mark: 'italic', icon: 'i-lucide-italic', 'aria-label': 'Italic' },
+    {
+      kind: 'mark',
+      mark: 'strike',
+      icon: 'i-lucide-strikethrough',
+      'aria-label': 'Strikethrough'
+    },
+    { kind: 'mark', mark: 'code', icon: 'i-lucide-code', 'aria-label': 'Inline code' }
+  ],
+  [
+    { kind: 'heading', level: 1, icon: 'i-lucide-heading-1', 'aria-label': 'Heading 1' },
+    { kind: 'heading', level: 2, icon: 'i-lucide-heading-2', 'aria-label': 'Heading 2' },
+    { kind: 'heading', level: 3, icon: 'i-lucide-heading-3', 'aria-label': 'Heading 3' }
+  ],
+  [
+    { kind: 'bulletList', icon: 'i-lucide-list', 'aria-label': 'Bullet list' },
+    { kind: 'orderedList', icon: 'i-lucide-list-ordered', 'aria-label': 'Numbered list' },
+    { kind: 'blockquote', icon: 'i-lucide-quote', 'aria-label': 'Quote' },
+    { kind: 'codeBlock', icon: 'i-lucide-square-code', 'aria-label': 'Code block' }
+  ],
+  [
+    { kind: 'undo', icon: 'i-lucide-undo-2', 'aria-label': 'Undo' },
+    { kind: 'redo', icon: 'i-lucide-redo-2', 'aria-label': 'Redo' }
+  ]
+]
+
+/**
+ * The link dialog.
+ *
+ * Ours rather than `UEditor`'s built-in `{ kind: 'link' }`, which falls back to
+ * `window.prompt()` for the href — and Electron's renderer doesn't implement
+ * `prompt`, so that button is dead on click. Passing the href in ourselves uses
+ * the same underlying commands with a control that exists.
+ *
+ * `shallowRef` for the editor: it is a large non-reactive TipTap instance, and
+ * making it deeply reactive would be pointless work on every keystroke.
+ */
+const isLinkOpen = ref(false)
+const linkHref = ref('')
+const linkEditor = shallowRef<TiptapEditor | null>(null)
+
+/** True once the href is one we're willing to render as an anchor. */
+const isLinkHrefValid = computed(() => isSafeLinkHref(linkHref.value))
+
+/** Whether the cursor already sits in a link, which turns Add into Update. */
+const isEditingExistingLink = computed(
+  () => linkEditor.value?.isActive('link') ?? false
+)
+
+function openLinkDialog(editor: TiptapEditor): void {
+  linkEditor.value = editor
+  // Prefill from the link under the cursor, so editing one isn't retyping it.
+  linkHref.value = (editor.getAttributes('link').href as string | undefined) ?? ''
+  isLinkOpen.value = true
+}
+
+function applyLink(): void {
+  const editor = linkEditor.value
+  if (editor === null || !isLinkHrefValid.value) return
+  // `extendMarkRange` so the whole existing link is replaced rather than the
+  // part the cursor happens to sit in.
+  editor
+    .chain()
+    .focus()
+    .extendMarkRange('link')
+    .setLink({ href: linkHref.value.trim() })
+    .run()
+  isLinkOpen.value = false
+}
+
+function removeLink(): void {
+  const editor = linkEditor.value
+  if (editor === null) return
+  editor.chain().focus().extendMarkRange('link').unsetLink().run()
+  isLinkOpen.value = false
+}
+
 function clearDates(): void {
   draft.value.startDate = ''
   draft.value.dueDate = ''
@@ -149,15 +277,30 @@ function clearDates(): void {
        `items-start` because a field carrying a reason is taller than its
        neighbours and they should top-align rather than centre. -->
   <div class="grid grid-cols-4 items-start gap-x-4 gap-y-4 text-sm">
-    <!-- Project is shown, not edited — see the `projectLabel` prop. A disabled
-         input rather than plain text so the row keeps its rhythm, and the label
-         carries the reason so a greyed control doesn't read as a bug without
-         costing a line of helper text under the field. -->
+    <!-- Project. A select when creating — it is what every other field's legal
+         values come from, so it leads the form — and a disabled input when
+         editing, where OpenProject offers no allowed values for it at all. A
+         disabled input rather than plain text so the row keeps its rhythm, and
+         the label carries the reason so a greyed control doesn't read as a bug
+         without costing a line of helper text under the field. -->
     <div class="col-span-2 flex min-w-0 flex-col gap-1">
       <label class="text-muted" :for="fieldId('project')">
-        Project (Edit isn’t supported)
+        {{ isProjectEditable ? 'Project' : 'Project (Edit isn’t supported)' }}
       </label>
+      <!-- Search kept here, unlike the short workflow lists: an instance can
+           have dozens of projects. -->
+      <USelectMenu
+        v-if="props.projectOptions"
+        :id="fieldId('project')"
+        v-model="projectValue"
+        :items="props.projectOptions"
+        value-key="value"
+        :disabled="props.busy"
+        placeholder="Choose a project"
+        class="w-full"
+      />
       <UInput
+        v-else
         :id="fieldId('project')"
         :model-value="props.projectLabel ?? ''"
         class="w-full"
@@ -295,19 +438,144 @@ function clearDates(): void {
       </p>
     </div>
 
-    <!-- Subject last and full width: the one free-text field, the one most
+    <!-- Subject full width: the one single-line free-text field, the one most
          likely to be long, and the one already shown as the panel's heading —
          so it needs the room but not the prominence. -->
     <div class="col-span-4 flex min-w-0 flex-col gap-1">
       <label class="text-muted" :for="fieldId('subject')">Subject</label>
+      <!-- The placeholder shows the *shape* of a good subject rather than
+           naming the field again — the label above already does that, and
+           "Subject" as its own placeholder tells a user nothing they can act
+           on. -->
       <UInput
         :id="fieldId('subject')"
         v-model="draft.subject"
         class="w-full"
+        placeholder="What needs doing — e.g. “Fix login redirect on expired session”"
         :disabled="props.busy || props.fields.subject.disabled"
       />
       <p v-if="props.fields.subject.reason" class="text-muted text-xs">
         {{ props.fields.subject.reason }}
+      </p>
+    </div>
+
+    <!-- Description last and full width: the only multi-line field, and the one
+         with no natural length, so it takes the room the panel has left.
+         `min-h-64` rather than a row count — `UEditor` sizes by CSS, having no
+         `rows` prop — and the panel scrolls past it rather than the field
+         growing without limit.
+
+         `content-type="markdown"` is load-bearing, not cosmetic: the draft holds
+         **raw markdown**, which is what `toCreateWorkPackageInput` sends and what
+         the main process wraps in a Formattable with the format pinned there. An
+         editor bound as HTML would put HTML in that field and OpenProject would
+         store it as markdown source. -->
+    <div class="col-span-4 flex min-w-0 flex-col gap-1">
+      <!-- A `span`, not a `label`: `UEditor` renders a wrapper `div` around a
+           contenteditable, and `for=` only binds to labelable form controls —
+           pointing at the wrapper would look correct and focus nothing. The
+           editor carries its own `aria-label` instead. -->
+      <span class="text-muted">Description</span>
+      <!-- The border and the toolbar are both ours to supply: `UEditor`'s root
+           slot ships empty, so without them the field reads as loose prose on
+           the page rather than an input. `layout="fixed"` keeps the toolbar
+           pinned above the text — the bubble and floating layouts need two more
+           TipTap packages we deliberately didn't install.
+
+           `mode: 'firstLine'` because the default, `everyLine`, repeats the
+           placeholder on every empty paragraph — so pressing Enter inside a
+           description that already has content shows the prompt again halfway
+           down the field.
+
+           The `base` overrides fix spacing meant for a full-width document:
+           `sm:px-8` indents the text away from every other field, `*:my-5` puts
+           1.25rem between blocks, and `leading-7` loosens the lines. -->
+
+      <UEditor
+        v-slot="{ editor }"
+        v-model="draft.description"
+        content-type="markdown"
+        class="w-full min-h-64 rounded-md border border-accented divide-y divide-accented"
+        :placeholder="{
+          placeholder:
+            'Context, acceptance criteria, links — anything the next person needs',
+          mode: 'firstLine'
+        }"
+        aria-label="Description"
+        :editable="!(props.busy || props.fields.description.disabled)"
+        :ui="{ content: 'p-2', base: 'sm:px-0 *:my-2 [&_p]:leading-normal' }"
+      >
+        <div
+          v-if="!(props.busy || props.fields.description.disabled)"
+          class="flex items-center gap-1 p-1"
+        >
+          <UEditorToolbar
+            :editor="editor"
+            :items="descriptionToolbar"
+            layout="fixed"
+          />
+          <!-- Outside `items` because it opens a dialog rather than running a
+               command — the toolbar's own link item would call `prompt()`. -->
+          <UTooltip text="Link">
+            <UButton
+              color="neutral"
+              variant="ghost"
+              size="sm"
+              icon="i-lucide-link"
+              aria-label="Link"
+              :ui="{ base: editor.isActive('link') ? 'bg-elevated' : '' }"
+              @click="openLinkDialog(editor)"
+            />
+          </UTooltip>
+        </div>
+      </UEditor>
+
+      <UModal
+        v-model:open="isLinkOpen"
+        :title="isEditingExistingLink ? 'Edit link' : 'Add link'"
+        :ui="{ content: 'max-w-md' }"
+      >
+        <template #body>
+          <UInput
+            v-model="linkHref"
+            class="w-full"
+            placeholder="https://example.com"
+            autofocus
+            aria-label="Link URL"
+            @keydown.enter="applyLink"
+          />
+          <!-- Shown only once something has been typed: an empty field is not
+               yet a mistake, and saying so on open is nagging. -->
+          <p v-if="linkHref.trim() && !isLinkHrefValid" class="text-error mt-2 text-xs">
+            Enter a full http or https URL, including the scheme.
+          </p>
+        </template>
+        <template #footer>
+          <div class="flex w-full items-center justify-end gap-2">
+            <UButton
+              v-if="isEditingExistingLink"
+              color="neutral"
+              variant="ghost"
+              label="Remove link"
+              @click="removeLink"
+            />
+            <UButton
+              color="neutral"
+              variant="ghost"
+              label="Cancel"
+              @click="isLinkOpen = false"
+            />
+            <UButton
+              color="primary"
+              :label="isEditingExistingLink ? 'Update' : 'Add'"
+              :disabled="!isLinkHrefValid"
+              @click="applyLink"
+            />
+          </div>
+        </template>
+      </UModal>
+      <p v-if="props.fields.description.reason" class="text-muted text-xs">
+        {{ props.fields.description.reason }}
       </p>
     </div>
   </div>

@@ -73,6 +73,24 @@ let scope: EffectScope
 let listWorkPackages: ReturnType<typeof vi.fn>
 let listStatuses: ReturnType<typeof vi.fn>
 let openWorkPackageInBrowser: ReturnType<typeof vi.fn>
+let listProjects: ReturnType<typeof vi.fn>
+let getWorkPackageCreateForm: ReturnType<typeof vi.fn>
+let listAvailableAssignees: ReturnType<typeof vi.fn>
+let createWorkPackage: ReturnType<typeof vi.fn>
+let getWorkPackageForm: ReturnType<typeof vi.fn>
+
+/** The create form for the one project the harness offers. */
+const CREATE_FORM = {
+  subject: { writable: true },
+  description: { writable: true },
+  startDate: { writable: true },
+  dueDate: { writable: true },
+  assignee: { writable: true },
+  status: { writable: true, allowedValues: [{ id: 1, name: 'To Do' }] },
+  type: { writable: true, allowedValues: [{ id: 1, name: 'Task' }] },
+  priority: { writable: true, allowedValues: [{ id: 8, name: 'Normal' }] },
+  defaults: { typeId: 1, statusId: 1, priorityId: 8 }
+}
 
 /** The `filters` object of every `listWorkPackages` call, in order. */
 function listCalls(): Array<Record<string, unknown>> {
@@ -114,9 +132,37 @@ beforeEach(() => {
   })
   listStatuses = vi.fn(() => Promise.resolve(STATUSES))
   openWorkPackageInBrowser = vi.fn(() => Promise.resolve())
+  listProjects = vi.fn(() =>
+    Promise.resolve({
+      _type: 'Collection',
+      total: 1,
+      count: 1,
+      _embedded: { elements: [{ id: 7, _type: 'Project', name: 'Backend' }] }
+    })
+  )
+  getWorkPackageCreateForm = vi.fn(() => Promise.resolve(CREATE_FORM))
+  getWorkPackageForm = vi.fn(() => Promise.resolve(CREATE_FORM))
+  listAvailableAssignees = vi.fn(() =>
+    Promise.resolve({
+      _type: 'Collection',
+      total: 1,
+      count: 1,
+      _embedded: { elements: [{ id: 11, _type: 'User', name: 'Alice' }] }
+    })
+  )
+  createWorkPackage = vi.fn(() => Promise.resolve(wp(500, 'Brand new')))
 
   vi.stubGlobal('window', {
-    openproject: { listWorkPackages, listStatuses, openWorkPackageInBrowser }
+    openproject: {
+      listWorkPackages,
+      listStatuses,
+      openWorkPackageInBrowser,
+      listProjects,
+      getWorkPackageCreateForm,
+      getWorkPackageForm,
+      listAvailableAssignees,
+      createWorkPackage
+    }
   })
 
   const pinia = createPinia()
@@ -608,5 +654,235 @@ describe('useWorkPackagesBrowser — errors', () => {
     expect((browser.error.value as { code?: string } | null)?.code).toBe(
       'OPENPROJECT_AUTH_FAILED'
     )
+  })
+})
+
+/**
+ * The unsaved-work guard, extended in stage 3 to cover the create draft.
+ *
+ * The question is the same whichever half of the pane is holding content —
+ * "you'll lose this, carry on?" — so it has one answer, and the browser asks it
+ * of the editor and the creator together. Reading them separately is how one of
+ * them ends up forgotten when a third caller appears.
+ */
+describe('useWorkPackagesBrowser — an unsaved create draft', () => {
+  async function inCreateMode() {
+    const browser = mountBrowser()
+    await flush()
+    browser.creator.startCreating()
+    await flush()
+    return browser
+  }
+
+  it('lets the screen close and rows switch while the draft is empty', async () => {
+    const browser = await inCreateMode()
+
+    expect(browser.requestClose()).toBe(true)
+    expect(browser.pendingAction.value).toBeNull()
+
+    browser.select(wp(102, 'Billing: invoice PDF export'))
+    expect(browser.pendingAction.value).toBeNull()
+    expect(browser.selectedWorkPackage.value?.id).toBe(102)
+  })
+
+  it('leaves create mode when a row is picked and nothing would be lost', async () => {
+    const browser = await inCreateMode()
+    browser.select(wp(102, 'Billing: invoice PDF export'))
+    expect(browser.creator.isCreating.value).toBe(false)
+  })
+
+  it('blocks a close once the draft holds something', async () => {
+    const browser = await inCreateMode()
+    browser.creator.draft.value.subject = 'Half-typed'
+
+    expect(browser.requestClose()).toBe(false)
+    expect(browser.pendingAction.value).toEqual({ kind: 'close' })
+  })
+
+  it('blocks a row switch once the draft holds something', async () => {
+    const browser = await inCreateMode()
+    browser.creator.draft.value.subject = 'Half-typed'
+
+    const target = wp(102, 'Billing: invoice PDF export')
+    browser.select(target)
+
+    expect(browser.pendingAction.value).toMatchObject({ kind: 'select' })
+    // Held, not performed — the panel is still showing what it was.
+    expect(browser.selectedWorkPackage.value?.id).not.toBe(102)
+    expect(browser.creator.draft.value.subject).toBe('Half-typed')
+  })
+
+  it('keeps the draft when the user says so', async () => {
+    const browser = await inCreateMode()
+    browser.creator.draft.value.subject = 'Half-typed'
+    browser.select(wp(102, 'Billing: invoice PDF export'))
+
+    browser.keepEditing()
+    expect(browser.pendingAction.value).toBeNull()
+    expect(browser.creator.isCreating.value).toBe(true)
+    expect(browser.creator.draft.value.subject).toBe('Half-typed')
+  })
+
+  it('discards the draft and performs the switch when the user says so', async () => {
+    const browser = await inCreateMode()
+    browser.creator.draft.value.subject = 'Half-typed'
+    browser.select(wp(102, 'Billing: invoice PDF export'))
+
+    expect(browser.discardPendingAction()).toBe('select')
+    expect(browser.creator.isCreating.value).toBe(false)
+    expect(browser.creator.draft.value.subject).toBe('')
+    expect(browser.selectedWorkPackage.value?.id).toBe(102)
+  })
+
+  it('reports a close so the modal can finish it, and clears the draft', async () => {
+    const browser = await inCreateMode()
+    browser.creator.draft.value.subject = 'Half-typed'
+    expect(browser.requestClose()).toBe(false)
+
+    expect(browser.discardPendingAction()).toBe('close')
+    expect(browser.creator.isCreating.value).toBe(false)
+    expect(browser.creator.draft.value.subject).toBe('')
+  })
+
+  /**
+   * Re-selecting the open row is normally a no-op. While the create panel is
+   * covering it, though, clicking it is a request to go back to reading it —
+   * otherwise the row the user just clicked appears to do nothing.
+   */
+  it('treats picking the already-selected row as a way back out of create mode', async () => {
+    const browser = mountBrowser()
+    await flush()
+    const open = browser.selectedWorkPackage.value
+    expect(open).not.toBeNull()
+
+    browser.creator.startCreating()
+    await flush()
+    browser.select(open!)
+
+    expect(browser.creator.isCreating.value).toBe(false)
+    expect(browser.pendingAction.value).toBeNull()
+  })
+
+  it('surfaces one unsaved-work verdict for both halves of the pane', async () => {
+    const browser = await inCreateMode()
+    expect(browser.hasUnsavedWork.value).toBe(false)
+    browser.creator.draft.value.description = 'Worth keeping'
+    expect(browser.hasUnsavedWork.value).toBe(true)
+  })
+})
+
+/**
+ * Entering create mode is the third way unsaved work can be lost, and the
+ * least visible one.
+ *
+ * Opening the create form does not itself destroy an edit draft — the editor
+ * keeps its state and Cancel comes straight back to it. *Finishing* the create
+ * does: `creator.create()` assigns the new work package to the selection, the
+ * editor's watcher sees a different row id, and it re-seeds. By then the edits
+ * are gone with nothing having asked, so the entrance is what gets guarded.
+ */
+describe('useWorkPackagesBrowser — starting a create with unsaved edits', () => {
+  /** A browser whose editor is open on the first row with an unsaved change. */
+  async function midEdit() {
+    const browser = mountBrowser()
+    await flush()
+    browser.editor.startEditing()
+    browser.editor.draft.value.subject = 'Half-typed edit'
+    await flush()
+    expect(browser.editor.isDirty.value).toBe(true)
+    return browser
+  }
+
+  it('intercepts New rather than entering create mode', async () => {
+    const browser = await midEdit()
+
+    browser.requestCreate()
+
+    expect(browser.pendingAction.value).toEqual({ kind: 'create' })
+    // Held, not performed: the edit panel is still what's on screen.
+    expect(browser.creator.isCreating.value).toBe(false)
+    expect(browser.editor.isEditing.value).toBe(true)
+    expect(browser.editor.draft.value.subject).toBe('Half-typed edit')
+  })
+
+  it('keeps the edit draft and stays out of create mode on keep-editing', async () => {
+    const browser = await midEdit()
+    browser.requestCreate()
+
+    browser.keepEditing()
+
+    expect(browser.pendingAction.value).toBeNull()
+    expect(browser.creator.isCreating.value).toBe(false)
+    expect(browser.editor.isEditing.value).toBe(true)
+    expect(browser.editor.isDirty.value).toBe(true)
+    expect(browser.editor.draft.value.subject).toBe('Half-typed edit')
+  })
+
+  it('enters create mode and drops the edit on discard', async () => {
+    const browser = await midEdit()
+    browser.requestCreate()
+
+    expect(browser.discardPendingAction()).toBe('create')
+
+    expect(browser.creator.isCreating.value).toBe(true)
+    expect(browser.editor.isEditing.value).toBe(false)
+    expect(browser.editor.isDirty.value).toBe(false)
+    expect(browser.editor.draft.value.subject).not.toBe('Half-typed edit')
+    // The create form starts empty — discarding must not carry anything over.
+    expect(browser.creator.draft.value.subject).toBe('')
+  })
+
+  it('does not intercept New when the editor is clean', async () => {
+    const browser = mountBrowser()
+    await flush()
+
+    browser.requestCreate()
+
+    expect(browser.pendingAction.value).toBeNull()
+    expect(browser.creator.isCreating.value).toBe(true)
+  })
+
+  it('does not intercept New when an edit is open but unchanged', async () => {
+    const browser = mountBrowser()
+    await flush()
+    browser.editor.startEditing()
+    await flush()
+
+    browser.requestCreate()
+
+    expect(browser.pendingAction.value).toBeNull()
+    expect(browser.creator.isCreating.value).toBe(true)
+  })
+
+  /**
+   * The loss this guard exists to prevent, end to end: without it, New →
+   * complete the create → the selection is reassigned → the editor re-seeds on
+   * the new row id and the draft is gone, unasked.
+   */
+  it('never lets a completed create silently discard an unguarded edit', async () => {
+    const browser = await midEdit()
+
+    browser.requestCreate()
+    // The only way past the question is to answer it.
+    expect(browser.creator.isCreating.value).toBe(false)
+    expect(browser.pendingAction.value).not.toBeNull()
+
+    browser.keepEditing()
+    expect(browser.editor.draft.value.subject).toBe('Half-typed edit')
+  })
+
+  it('asks before restarting a create that already holds content', async () => {
+    const browser = mountBrowser()
+    await flush()
+    browser.requestCreate()
+    await flush()
+    browser.creator.draft.value.subject = 'Half-typed create'
+
+    browser.requestCreate()
+    expect(browser.pendingAction.value).toEqual({ kind: 'create' })
+
+    expect(browser.discardPendingAction()).toBe('create')
+    expect(browser.creator.isCreating.value).toBe(true)
+    expect(browser.creator.draft.value.subject).toBe('')
   })
 })

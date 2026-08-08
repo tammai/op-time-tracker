@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest'
 import {
   validateOpenProjectBaseUrl,
   OpenProjectBaseUrlSchema,
-  formatUrlZodError
+  formatUrlZodError,
+  isSafeLinkHref
 } from '~~/src/shared/validation/url'
 import { z } from 'zod'
 
@@ -182,5 +183,31 @@ describe('OpenProjectBaseUrlSchema', () => {
     // Construct an empty-error ZodError to exercise the fallback branch.
     const emptyError = new z.ZodError([])
     expect(formatUrlZodError(emptyError)).toMatch(/invalid/i)
+  })
+})
+describe('isSafeLinkHref', () => {
+  it('accepts http and https links', () => {
+    expect(isSafeLinkHref('https://example.com')).toBe(true)
+    expect(isSafeLinkHref('http://example.com/path?a=1#b')).toBe(true)
+    expect(isSafeLinkHref('  https://example.com  ')).toBe(true)
+  })
+
+  it('rejects schemes that would execute or read the disk', () => {
+    // A description is rendered back with clickable anchors, so these are the
+    // cases that matter — not merely malformed input.
+    expect(isSafeLinkHref('javascript:alert(1)')).toBe(false)
+    expect(isSafeLinkHref('JavaScript:alert(1)')).toBe(false)
+    expect(isSafeLinkHref('data:text/html,<script>alert(1)</script>')).toBe(false)
+    expect(isSafeLinkHref('file:///etc/passwd')).toBe(false)
+    expect(isSafeLinkHref('vbscript:msgbox(1)')).toBe(false)
+  })
+
+  it('rejects anything it cannot parse, and never guesses a scheme', () => {
+    // Prefixing https:// would turn a typo into a link somewhere unnamed.
+    expect(isSafeLinkHref('example.com')).toBe(false)
+    expect(isSafeLinkHref('not a url')).toBe(false)
+    expect(isSafeLinkHref('')).toBe(false)
+    expect(isSafeLinkHref('   ')).toBe(false)
+    expect(isSafeLinkHref('http://')).toBe(false)
   })
 })

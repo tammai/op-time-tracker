@@ -42,6 +42,7 @@ import {
   WorkPackageSchema
 } from '~~/src/main/schemas/work-packages'
 import { PrincipalCollectionSchema } from '~~/src/main/schemas/principals'
+import { ProjectCollectionSchema } from '~~/src/main/schemas/projects'
 import {
   TimeEntryCollectionSchema,
   TimeEntrySchema,
@@ -54,6 +55,8 @@ import timeEntriesFixture from '~~/tests/fixtures/time-entries-collection.json'
 import statusesFixture from '~~/tests/fixtures/statuses-collection.json'
 import workPackageFormFixture from '~~/tests/fixtures/work-package-form.json'
 import assigneesFixture from '~~/tests/fixtures/available-assignees-collection.json'
+import projectsFixture from '~~/tests/fixtures/projects-collection.json'
+import createFormFixture from '~~/tests/fixtures/work-package-create-form.json'
 
 const BASE_URL = 'https://openproject.example.com'
 // A throwaway test API key. Asserted present in the Authorization header,
@@ -991,6 +994,248 @@ describe('happy path — update work package', () => {
 
   it('rejects with CREDENTIAL_NOT_CONFIGURED when nothing is stored', async () => {
     const err = await expectIpcError(() => updateWorkPackage(validInput))
+    expect(err.code).toBe('CREDENTIAL_NOT_CONFIGURED')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Stage 3 — the create channels
+// ---------------------------------------------------------------------------
+
+/** Helper: invoke the projects handler (it takes no input). */
+function listProjects(): Promise<unknown> {
+  return electron.invoke('op:openproject:list-projects')
+}
+
+/** Helper: invoke the create-form handler. */
+function getWorkPackageCreateForm(input: unknown): Promise<unknown> {
+  return electron.invoke('op:openproject:get-work-package-create-form', input)
+}
+
+/** Helper: invoke the create handler. */
+function createWorkPackage(input: unknown): Promise<unknown> {
+  return electron.invoke('op:openproject:create-work-package', input)
+}
+
+describe('happy path — projects', () => {
+  it('GETs the available-projects collection with auth and Zod-validates it', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    fetchMock.mockResolvedValueOnce(jsonOk(projectsFixture))
+
+    const result = await listProjects()
+    expect(result).toEqual(ProjectCollectionSchema.parse(projectsFixture))
+
+    const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+    // Not `/api/v3/projects` — that collection includes projects this key can
+    // see but not create in.
+    expect(url.pathname).toBe('/api/v3/work_packages/available_projects')
+    expect((init.headers as Record<string, string>).Authorization).toBe(EXPECTED_AUTH)
+  })
+
+  it('returns an empty collection rather than an error when the key may create nowhere', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    fetchMock.mockResolvedValueOnce(
+      jsonOk({ _type: 'Collection', total: 0, count: 0, _embedded: { elements: [] } })
+    )
+    const result = (await listProjects()) as { _embedded: { elements: unknown[] } }
+    expect(result._embedded.elements).toEqual([])
+  })
+
+  it('rejects with a typed error when no credentials are configured', async () => {
+    const err = await expectIpcError(() => listProjects())
+    expect(err.code).toBe('CREDENTIAL_NOT_CONFIGURED')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('happy path — work package create form', () => {
+  it('POSTs the project-scoped form endpoint and returns the normalized form', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    fetchMock.mockResolvedValueOnce(jsonOk(createFormFixture))
+
+    const form = (await getWorkPackageCreateForm({ projectId: 7 })) as {
+      type: { allowedValues: { id: number; name: string }[] }
+      defaults: Record<string, number | null>
+    }
+
+    const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+    expect(url.href).toBe(`${BASE_URL}/api/v3/projects/7/work_packages/form`)
+    expect(init.method).toBe('POST')
+    expect((init.headers as Record<string, string>).Authorization).toBe(EXPECTED_AUTH)
+
+    expect(form.type.allowedValues).toEqual([
+      { id: 1, name: 'Task' },
+      { id: 7, name: 'Bug' }
+    ])
+    expect(form.defaults).toEqual({ typeId: 1, statusId: 1, priorityId: 8 })
+    // Flattened out of HAL before it crosses IPC.
+    expect(JSON.stringify(form)).not.toContain('href')
+  })
+
+  /**
+   * The property that makes a POST acceptable on a read channel. Unlike the
+   * edit form there is not even a lock version to send, so with no type chosen
+   * the body is empty — and a hostile renderer's extra keys never survive.
+   */
+  it('forwards nothing the renderer supplied beyond a validated type id', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+
+    fetchMock.mockResolvedValueOnce(jsonOk(createFormFixture))
+    await getWorkPackageCreateForm({ projectId: 7 })
+    expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toEqual(
+      {}
+    )
+
+    fetchMock.mockResolvedValueOnce(jsonOk(createFormFixture))
+    await getWorkPackageCreateForm({
+      projectId: 7,
+      typeId: 1,
+      subject: 'pwned',
+      _links: { project: { href: '/api/v3/projects/999' } }
+    })
+    expect(JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string)).toEqual({
+      _links: { type: { href: '/api/v3/types/1' } }
+    })
+  })
+
+  it('rejects a renderer-supplied path in place of the numeric project id', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+
+    for (const projectId of ['7/../../work_packages', '7?x=1', '../admin', 0, 1.5]) {
+      const err = await expectIpcError(() => getWorkPackageCreateForm({ projectId }))
+      expect(err.code).toBe('OPENPROJECT_INVALID_INPUT')
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a 404 as OPENPROJECT_NOT_FOUND — the project is gone or invisible', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 404 }))
+
+    const err = await expectIpcError(() => getWorkPackageCreateForm({ projectId: 999 }))
+    expect(err.code).toBe('OPENPROJECT_NOT_FOUND')
+  })
+})
+
+describe('happy path — create work package', () => {
+  const validInput = { projectId: 7, typeId: 1, subject: 'Add a create form' }
+
+  /** What OpenProject echoes back after a successful POST. */
+  const echoed = {
+    ...workPackagesFixture._embedded.elements[0],
+    id: 99,
+    lockVersion: 0,
+    subject: 'Add a create form'
+  }
+
+  it('POSTs the collection URL with auth and returns the Zod-validated result', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    fetchMock.mockResolvedValueOnce(jsonOk(echoed))
+
+    const result = await createWorkPackage(validInput)
+    expect(result).toEqual(WorkPackageSchema.parse(echoed))
+
+    const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+    expect(url.href).toBe(`${BASE_URL}/api/v3/work_packages`)
+    expect(init.method).toBe('POST')
+    const headers = init.headers as Record<string, string>
+    expect(headers.Authorization).toBe(EXPECTED_AUTH)
+    expect(headers['Content-Type']).toBe('application/json')
+  })
+
+  it('builds every href in main from the ids the renderer sent', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    fetchMock.mockResolvedValueOnce(jsonOk(echoed))
+
+    await createWorkPackage({
+      ...validInput,
+      statusId: 1,
+      priorityId: 8,
+      assigneeId: 11,
+      startDate: '2026-03-01'
+    })
+
+    const [, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+    const body = JSON.parse(init.body as string) as Record<string, unknown>
+    expect(body._links).toEqual({
+      project: { href: '/api/v3/projects/7' },
+      type: { href: '/api/v3/types/1' },
+      status: { href: '/api/v3/statuses/1' },
+      priority: { href: '/api/v3/priorities/8' },
+      assignee: { href: '/api/v3/users/11' }
+    })
+    expect(body.startDate).toBe('2026-03-01')
+    expect('dueDate' in body).toBe(false)
+  })
+
+  it('pins the description format in the main process', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    fetchMock.mockResolvedValueOnce(jsonOk(echoed))
+
+    await createWorkPackage({
+      ...validInput,
+      description: 'Body **text**',
+      // A renderer trying to choose the format, or to inject rendered HTML.
+      descriptionFormat: 'textile',
+      descriptionHtml: '<script>alert(1)</script>'
+    })
+
+    const [, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+    expect(JSON.parse(init.body as string).description).toEqual({
+      format: 'markdown',
+      raw: 'Body **text**'
+    })
+    expect(init.body as string).not.toContain('textile')
+    expect(init.body as string).not.toContain('<script>')
+  })
+
+  it('rejects renderer-supplied invalid input without calling fetch', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+
+    for (const bad of [
+      { typeId: 1, subject: 'x' },
+      { projectId: 7, subject: 'x' },
+      { projectId: 7, typeId: 1 },
+      { ...validInput, subject: '   ' },
+      { ...validInput, subject: 'x'.repeat(256) },
+      { ...validInput, description: 'x'.repeat(30_001) },
+      { ...validInput, startDate: '2026-02-31' },
+      { ...validInput, assigneeId: 0 },
+      { ...validInput, projectId: '7/../../users' }
+    ]) {
+      const err = await expectIpcError(() => createWorkPackage(bad))
+      expect(err.code).toBe('OPENPROJECT_INVALID_INPUT')
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  /**
+   * The 422 the create form cannot predict. Its message is the only actionable
+   * thing the user gets, so it is forwarded — while the echoed request content
+   * the same body carries is not.
+   */
+  it('surfaces a 422 with OpenProject’s message and nothing else from the body', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          _type: 'Error',
+          message: 'Team can’t be blank.',
+          _embedded: { payload: { subject: 'must-not-leak' } }
+        }),
+        { status: 422, headers: { 'content-type': 'application/json' } }
+      )
+    )
+
+    const err = await expectIpcError(() => createWorkPackage(validInput))
+    expect(err.code).toBe('OPENPROJECT_VALIDATION_FAILED')
+    expect(err.message).toBe('Team can’t be blank.')
+    expect(err.message).not.toContain('must-not-leak')
+  })
+
+  it('rejects with a typed error when no credentials are configured', async () => {
+    const err = await expectIpcError(() => createWorkPackage(validInput))
     expect(err.code).toBe('CREDENTIAL_NOT_CONFIGURED')
     expect(fetchMock).not.toHaveBeenCalled()
   })

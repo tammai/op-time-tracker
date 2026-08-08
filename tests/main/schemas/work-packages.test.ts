@@ -8,13 +8,22 @@ import {
   WorkPackageFormResponseSchema,
   WorkPackageFormSchema,
   WorkPackageFormInputSchema,
+  WorkPackageCreateFormResponseSchema,
+  WorkPackageCreateFormSchema,
+  WorkPackageCreateFormInputSchema,
   AvailableAssigneesInputSchema,
   UpdateWorkPackageInputSchema,
+  CreateWorkPackageInputSchema,
   buildWorkPackagePatchPayload,
+  buildWorkPackageCreatePayload,
   normalizeWorkPackageForm,
-  WORK_PACKAGE_SUBJECT_MAX_LENGTH
+  normalizeWorkPackageCreateForm,
+  WORK_PACKAGE_SUBJECT_MAX_LENGTH,
+  WORK_PACKAGE_DESCRIPTION_MAX_LENGTH,
+  WORK_PACKAGE_DESCRIPTION_FORMAT
 } from '~~/src/main/schemas/work-packages'
 import formFixture from '~~/tests/fixtures/work-package-form.json'
+import createFormFixture from '~~/tests/fixtures/work-package-create-form.json'
 
 /**
  * Minimal structural type for the OpenProject Collection fixture JSON. The
@@ -645,5 +654,480 @@ describe('buildWorkPackagePatchPayload', () => {
       startDate: '2026-03-01',
       dueDate: null
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Stage 3 — the create form and the create payload
+// ---------------------------------------------------------------------------
+
+/**
+ * The create form (`POST /api/v3/projects/{id}/work_packages/form`).
+ *
+ * A different resource from the edit form, not a variant of it: it takes no
+ * lock version, it is scoped to a project rather than to a work package, and
+ * its `_embedded.payload._links` carries OpenProject's own defaults for the
+ * three required links. See PLAN.md, "Verified API shapes — Stage 3".
+ */
+describe('WorkPackageCreateFormResponseSchema', () => {
+  it('parses the real create-form response', () => {
+    const form = WorkPackageCreateFormResponseSchema.parse(createFormFixture)
+    expect(form._embedded?.schema?.type?.writable).toBe(true)
+    expect(form._embedded?.schema?.description?.writable).toBe(true)
+    expect(form._embedded?.payload?._links?.status?.href).toBe('/api/v3/statuses/1')
+  })
+
+  it('tolerates a form with no payload and no schema', () => {
+    expect(() =>
+      WorkPackageCreateFormResponseSchema.parse({ _type: 'Form' })
+    ).not.toThrow()
+  })
+
+  it('tolerates the instance-specific custom fields a real schema is full of', () => {
+    expect(() =>
+      WorkPackageCreateFormResponseSchema.parse({
+        _type: 'Form',
+        _embedded: {
+          schema: {
+            customField12: { type: 'String', writable: true },
+            _dependencies: [{ on: 'type' }]
+          }
+        }
+      })
+    ).not.toThrow()
+  })
+
+  it('rejects a non-object body', () => {
+    expect(() => WorkPackageCreateFormResponseSchema.parse('nope')).toThrow()
+    expect(() => WorkPackageCreateFormResponseSchema.parse(null)).toThrow()
+  })
+})
+
+describe('normalizeWorkPackageCreateForm', () => {
+  const normalized = () =>
+    WorkPackageCreateFormSchema.parse(
+      normalizeWorkPackageCreateForm(
+        WorkPackageCreateFormResponseSchema.parse(createFormFixture)
+      )
+    )
+
+  it('flattens the enumerated fields to plain { id, name } lists', () => {
+    const form = normalized()
+    expect(form.type.allowedValues).toEqual([
+      { id: 1, name: 'Task' },
+      { id: 7, name: 'Bug' }
+    ])
+    expect(form.status.allowedValues).toEqual([
+      { id: 1, name: 'To Do' },
+      { id: 7, name: 'In progress' }
+    ])
+    expect(form.priority.allowedValues).toEqual([
+      { id: 8, name: 'Normal' },
+      { id: 9, name: 'High' }
+    ])
+  })
+
+  it('carries `writable` for the free-form fields, description included', () => {
+    const form = normalized()
+    for (const key of [
+      'subject',
+      'description',
+      'startDate',
+      'dueDate',
+      'assignee'
+    ] as const) {
+      expect(form[key].writable).toBe(true)
+    }
+  })
+
+  /**
+   * The reason the create form is worth reading at all beyond its allowed
+   * values: it says which type/status/priority OpenProject would pick, so the
+   * three required links can be prefilled instead of gating Create on choices
+   * the user has no basis to make.
+   */
+  it('reads OpenProject’s own defaults out of the form payload', () => {
+    expect(normalized().defaults).toEqual({
+      typeId: 1,
+      statusId: 1,
+      priorityId: 8
+    })
+  })
+
+  it('reports a null default rather than inventing one when a link is unset', () => {
+    const form = WorkPackageCreateFormSchema.parse(
+      normalizeWorkPackageCreateForm(
+        WorkPackageCreateFormResponseSchema.parse({
+          _type: 'Form',
+          _embedded: {
+            payload: { _links: { type: { href: null }, status: {} } },
+            schema: {}
+          }
+        })
+      )
+    )
+    expect(form.defaults).toEqual({
+      typeId: null,
+      statusId: null,
+      priorityId: null
+    })
+  })
+
+  it('ignores a default href pointing at the wrong collection', () => {
+    const form = WorkPackageCreateFormSchema.parse(
+      normalizeWorkPackageCreateForm(
+        WorkPackageCreateFormResponseSchema.parse({
+          _type: 'Form',
+          _embedded: {
+            // A status href in the type slot must not become a type id.
+            payload: { _links: { type: { href: '/api/v3/statuses/1' } } }
+          }
+        })
+      )
+    )
+    expect(form.defaults.typeId).toBeNull()
+  })
+
+  it('yields empty, non-writable fields for a form with no schema', () => {
+    const form = WorkPackageCreateFormSchema.parse(
+      normalizeWorkPackageCreateForm(
+        WorkPackageCreateFormResponseSchema.parse({ _type: 'Form' })
+      )
+    )
+    expect(form.type).toEqual({ writable: false, allowedValues: [] })
+    expect(form.subject.writable).toBe(false)
+  })
+
+  it('never lets an href or an _embedded block reach the renderer', () => {
+    const serialized = JSON.stringify(normalized())
+    expect(serialized).not.toContain('href')
+    expect(serialized).not.toContain('_links')
+    expect(serialized).not.toContain('_embedded')
+  })
+})
+
+describe('WorkPackageCreateFormInputSchema', () => {
+  it('accepts a project id on its own', () => {
+    expect(WorkPackageCreateFormInputSchema.parse({ projectId: 7 })).toEqual({
+      projectId: 7
+    })
+  })
+
+  it('accepts an optional type id alongside it', () => {
+    expect(
+      WorkPackageCreateFormInputSchema.parse({ projectId: 7, typeId: 1 })
+    ).toEqual({ projectId: 7, typeId: 1 })
+  })
+
+  it('rejects anything that could reach the request path as a non-integer', () => {
+    for (const input of [
+      {},
+      { projectId: 0 },
+      { projectId: -1 },
+      { projectId: 1.5 },
+      { projectId: '7' },
+      { projectId: '7/../../work_packages' },
+      { projectId: 7, typeId: 0 },
+      { projectId: 7, typeId: '1' },
+      { projectId: 7, typeId: null }
+    ]) {
+      expect(WorkPackageCreateFormInputSchema.safeParse(input).success).toBe(false)
+    }
+  })
+})
+
+describe('CreateWorkPackageInputSchema', () => {
+  const base = { projectId: 7, typeId: 1, subject: 'Add a create form' }
+
+  it('accepts the minimum a create needs — project, type, subject', () => {
+    expect(CreateWorkPackageInputSchema.parse(base)).toEqual(base)
+  })
+
+  it('accepts every optional field at once', () => {
+    const parsed = CreateWorkPackageInputSchema.parse({
+      ...base,
+      description: 'Some **markdown**.',
+      statusId: 1,
+      priorityId: 8,
+      assigneeId: 11,
+      startDate: '2026-03-01',
+      dueDate: '2026-03-14'
+    })
+    expect(parsed.description).toBe('Some **markdown**.')
+    expect(parsed.assigneeId).toBe(11)
+  })
+
+  it('requires a project, a type and a subject', () => {
+    expect(CreateWorkPackageInputSchema.safeParse({ typeId: 1, subject: 'x' }).success).toBe(
+      false
+    )
+    expect(
+      CreateWorkPackageInputSchema.safeParse({ projectId: 7, subject: 'x' }).success
+    ).toBe(false)
+    expect(CreateWorkPackageInputSchema.safeParse({ projectId: 7, typeId: 1 }).success).toBe(
+      false
+    )
+  })
+
+  it('trims the subject and rejects a blank one', () => {
+    expect(CreateWorkPackageInputSchema.parse({ ...base, subject: '  Padded  ' }).subject).toBe(
+      'Padded'
+    )
+    expect(CreateWorkPackageInputSchema.safeParse({ ...base, subject: '   ' }).success).toBe(
+      false
+    )
+  })
+
+  it('bounds the subject at the hardcoded cap, not at a server-reported one', () => {
+    const atCap = 'x'.repeat(WORK_PACKAGE_SUBJECT_MAX_LENGTH)
+    expect(CreateWorkPackageInputSchema.safeParse({ ...base, subject: atCap }).success).toBe(
+      true
+    )
+    expect(
+      CreateWorkPackageInputSchema.safeParse({ ...base, subject: `${atCap}x` }).success
+    ).toBe(false)
+  })
+
+  /**
+   * Description is renderer free text with no server-side length limit worth
+   * trusting, so the bound is ours. Without it a renderer could hand this
+   * process an arbitrarily large string to hold, serialize, and upload.
+   */
+  it('bounds the description length in the main process', () => {
+    const atCap = 'x'.repeat(WORK_PACKAGE_DESCRIPTION_MAX_LENGTH)
+    expect(
+      CreateWorkPackageInputSchema.safeParse({ ...base, description: atCap }).success
+    ).toBe(true)
+    expect(
+      CreateWorkPackageInputSchema.safeParse({ ...base, description: `${atCap}x` }).success
+    ).toBe(false)
+  })
+
+  it('leaves description whitespace alone — markdown depends on it', () => {
+    const parsed = CreateWorkPackageInputSchema.parse({
+      ...base,
+      description: 'line one  \nline two\n'
+    })
+    expect(parsed.description).toBe('line one  \nline two\n')
+  })
+
+  /**
+   * Unlike the update input, `null` is not a value here. There is nothing to
+   * clear on a work package that does not exist yet, so a nullable field would
+   * be a second way of saying "absent" — and two spellings of one meaning is
+   * how the clear-vs-omit bug gets in.
+   */
+  it('rejects null for the optional links and dates', () => {
+    for (const field of ['statusId', 'priorityId', 'assigneeId', 'startDate', 'dueDate']) {
+      expect(
+        CreateWorkPackageInputSchema.safeParse({ ...base, [field]: null }).success
+      ).toBe(false)
+    }
+  })
+
+  it('rejects ids that are not positive integers', () => {
+    for (const patch of [
+      { projectId: 0 },
+      { projectId: -3 },
+      { projectId: 1.5 },
+      { projectId: '7' },
+      { typeId: 0 },
+      { statusId: -1 },
+      { priorityId: 1.5 },
+      { assigneeId: '11' }
+    ]) {
+      expect(CreateWorkPackageInputSchema.safeParse({ ...base, ...patch }).success).toBe(
+        false
+      )
+    }
+  })
+
+  it('rejects a date that is not a real calendar day', () => {
+    expect(
+      CreateWorkPackageInputSchema.safeParse({ ...base, startDate: '2026-02-31' }).success
+    ).toBe(false)
+    expect(
+      CreateWorkPackageInputSchema.safeParse({ ...base, dueDate: '01/03/2026' }).success
+    ).toBe(false)
+  })
+})
+
+describe('buildWorkPackageCreatePayload', () => {
+  const base = { projectId: 7, typeId: 1, subject: 'Add a create form' }
+  const build = (input: Record<string, unknown>) =>
+    buildWorkPackageCreatePayload(
+      CreateWorkPackageInputSchema.parse({ ...base, ...input })
+    )
+
+  it('sends the subject and the two required links, and nothing else', () => {
+    expect(build({})).toEqual({
+      subject: 'Add a create form',
+      _links: {
+        project: { href: '/api/v3/projects/7' },
+        type: { href: '/api/v3/types/1' }
+      }
+    })
+  })
+
+  it('builds every href itself from the validated numeric ids', () => {
+    const payload = build({ statusId: 1, priorityId: 8, assigneeId: 11 })
+    expect(payload._links).toEqual({
+      project: { href: '/api/v3/projects/7' },
+      type: { href: '/api/v3/types/1' },
+      status: { href: '/api/v3/statuses/1' },
+      priority: { href: '/api/v3/priorities/8' },
+      assignee: { href: '/api/v3/users/11' }
+    })
+  })
+
+  /**
+   * The format is a main-process constant. A live instance accepted a payload
+   * whose `format` was `"custom"` and whose `html` was `<script>alert(1)</script>`
+   * with *empty* validation errors (PLAN.md, "Verified API shapes — Stage 3"),
+   * so the server is not the boundary here — this is.
+   */
+  it('wraps the description in a formattable whose format is pinned here', () => {
+    const payload = build({ description: 'Body **text**' })
+    expect(payload.description).toEqual({
+      format: WORK_PACKAGE_DESCRIPTION_FORMAT,
+      raw: 'Body **text**'
+    })
+    expect(WORK_PACKAGE_DESCRIPTION_FORMAT).toBe('markdown')
+  })
+
+  it('never sends an html field — the server renders it', () => {
+    const payload = build({ description: '<script>alert(1)</script>' })
+    expect(payload.description).toEqual({
+      format: 'markdown',
+      raw: '<script>alert(1)</script>'
+    })
+    expect(payload.description).not.toHaveProperty('html')
+  })
+
+  it('omits the description entirely when there is none to send', () => {
+    expect(build({})).not.toHaveProperty('description')
+    expect(build({ description: '' })).not.toHaveProperty('description')
+  })
+
+  it('sends the dates only when given', () => {
+    expect(build({ startDate: '2026-03-01' })).toMatchObject({
+      startDate: '2026-03-01'
+    })
+    expect(build({})).not.toHaveProperty('startDate')
+    expect(build({})).not.toHaveProperty('dueDate')
+  })
+
+  it('puts no lock version in the body — there is no revision to be stale', () => {
+    expect(build({ statusId: 1 })).not.toHaveProperty('lockVersion')
+  })
+
+  /**
+   * The renderer sends ids. If it ever sent hrefs, a `format`, or an `_links`
+   * block of its own, none of it may survive into the request — the payload is
+   * rebuilt field by field from the parsed input, never spread from it.
+   */
+  it('drops anything the renderer appended beyond the declared fields', () => {
+    const payload = buildWorkPackageCreatePayload(
+      CreateWorkPackageInputSchema.parse({
+        ...base,
+        // Extra keys are stripped by the schema before the builder ever sees
+        // them; asserting on the built payload proves neither layer forwards.
+        ...({
+          _links: { project: { href: '/api/v3/projects/999' } },
+          description: 'text',
+          descriptionFormat: 'textile',
+          lockVersion: 3
+        } as Record<string, unknown>)
+      })
+    )
+    expect(payload._links).toEqual({
+      project: { href: '/api/v3/projects/7' },
+      type: { href: '/api/v3/types/1' }
+    })
+    expect(payload).not.toHaveProperty('descriptionFormat')
+    expect(payload).not.toHaveProperty('lockVersion')
+    expect(payload.description).toEqual({ format: 'markdown', raw: 'text' })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Description on the *edit* path — the scope widening the create form implies
+// ---------------------------------------------------------------------------
+
+describe('description on an existing work package', () => {
+  it('parses the formattable object a real instance returns', () => {
+    const wp = WorkPackageSchema.parse({
+      id: 42,
+      _type: 'WorkPackage',
+      lockVersion: 1,
+      subject: 'Has a description',
+      description: { format: 'markdown', raw: 'Body', html: '<p>Body</p>' },
+      _links: { self: { href: '/api/v3/work_packages/42' } }
+    })
+    expect(wp.description).toEqual({
+      format: 'markdown',
+      raw: 'Body',
+      html: '<p>Body</p>'
+    })
+  })
+
+  it('accepts the bare-string and null spellings, and an absent key', () => {
+    const parse = (description: unknown) =>
+      WorkPackageSchema.parse({
+        id: 42,
+        _type: 'WorkPackage',
+        lockVersion: 1,
+        subject: 'x',
+        ...(description === undefined ? {} : { description }),
+        _links: { self: { href: '/api/v3/work_packages/42' } }
+      })
+    expect(() => parse('plain text')).not.toThrow()
+    expect(() => parse(null)).not.toThrow()
+    expect(() => parse(undefined)).not.toThrow()
+  })
+
+  it('bounds a description on update the same way as on create', () => {
+    const base = { id: 42, lockVersion: 4 }
+    const atCap = 'x'.repeat(WORK_PACKAGE_DESCRIPTION_MAX_LENGTH)
+    expect(
+      UpdateWorkPackageInputSchema.safeParse({ ...base, description: atCap }).success
+    ).toBe(true)
+    expect(
+      UpdateWorkPackageInputSchema.safeParse({ ...base, description: `${atCap}x` }).success
+    ).toBe(false)
+  })
+
+  it('sends a cleared description as an empty raw, and omits an untouched one', () => {
+    const base = { id: 42, lockVersion: 4 }
+    const cleared = buildWorkPackagePatchPayload(
+      UpdateWorkPackageInputSchema.parse({ ...base, description: '' })
+    )
+    expect(cleared.description).toEqual({ format: 'markdown', raw: '' })
+
+    const untouched = buildWorkPackagePatchPayload(
+      UpdateWorkPackageInputSchema.parse(base)
+    )
+    expect(untouched).not.toHaveProperty('description')
+  })
+
+  it('pins the format on the update path too', () => {
+    const payload = buildWorkPackagePatchPayload(
+      UpdateWorkPackageInputSchema.parse({
+        id: 42,
+        lockVersion: 4,
+        description: 'Body'
+      })
+    )
+    expect(payload.description).toEqual({
+      format: WORK_PACKAGE_DESCRIPTION_FORMAT,
+      raw: 'Body'
+    })
+  })
+
+  it('reports description writability on the edit form too', () => {
+    const form = WorkPackageFormSchema.parse(
+      normalizeWorkPackageForm(WorkPackageFormResponseSchema.parse(formFixture))
+    )
+    expect(form.description.writable).toBe(true)
   })
 })

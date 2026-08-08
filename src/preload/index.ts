@@ -11,8 +11,10 @@ import type {
   DeleteTimeEntryInput,
   OpenWorkPackageInBrowserInput,
   WorkPackageFormInput,
+  WorkPackageCreateFormInput,
   AvailableAssigneesInput,
-  UpdateWorkPackageInput
+  UpdateWorkPackageInput,
+  CreateWorkPackageInput
 } from './types'
 
 const bridge: OpenProjectBridge = {
@@ -65,8 +67,20 @@ const bridge: OpenProjectBridge = {
     ipcRenderer.invoke('op:openproject:get-work-package-form', input),
   listAvailableAssignees: (input: AvailableAssigneesInput) =>
     ipcRenderer.invoke('op:openproject:list-available-assignees', input),
+  getCurrentUser: () => ipcRenderer.invoke('op:openproject:get-current-user'),
   updateWorkPackage: (input: UpdateWorkPackageInput) =>
     ipcRenderer.invoke('op:openproject:update-work-package', input),
+
+  // Work package creation (stage 3). `listProjects` reads the *available*
+  // projects — the ones this key may actually create in.
+  // `getWorkPackageCreateForm` is a POST that reads, taking no lock version;
+  // only a validated type id ever reaches its body. `createWorkPackage` sends
+  // numeric ids, and the description's format is pinned in the main process.
+  listProjects: () => ipcRenderer.invoke('op:openproject:list-projects'),
+  getWorkPackageCreateForm: (input: WorkPackageCreateFormInput) =>
+    ipcRenderer.invoke('op:openproject:get-work-package-create-form', input),
+  createWorkPackage: (input: CreateWorkPackageInput) =>
+    ipcRenderer.invoke('op:openproject:create-work-package', input),
 
   // The one channel that hands a URL to the operating system. It takes a
   // numeric id, never a URL — the main process builds the target itself from
@@ -94,16 +108,23 @@ export type {
   DeleteTimeEntryInput,
   OpenWorkPackageInBrowserInput,
   WorkPackageFormInput,
+  WorkPackageCreateFormInput,
   AvailableAssigneesInput,
   UpdateWorkPackageInput,
+  CreateWorkPackageInput,
   WorkPackage,
   WorkPackageCollection,
   WorkPackageLinks,
   WorkPackageForm,
   WorkPackageFormField,
+  WorkPackageCreateForm,
+  WorkPackageCreateDefaults,
   AllowedValue,
+  Formattable,
   Principal,
   PrincipalCollection,
+  Project,
+  ProjectCollection,
   TimeEntry,
   TimeEntryCollection,
   TimeEntryLinks,

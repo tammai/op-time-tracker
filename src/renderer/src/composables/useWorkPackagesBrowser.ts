@@ -14,6 +14,7 @@ import {
 } from '@renderer/composables/queries/work-packages'
 import { useStatusResolution } from '@renderer/composables/queries/statuses'
 import { useWorkPackageEditor } from '@renderer/composables/useWorkPackageEditor'
+import { useWorkPackageCreator } from '@renderer/composables/useWorkPackageCreator'
 import {
   decideWorkPackageSearch,
   isPriorityWorkPackage,
@@ -73,6 +74,35 @@ export type StatusFilterValue = string
 export interface StatusFilterOption {
   label: string
   value: StatusFilterValue
+}
+
+/**
+ * An action the user asked for that unsaved work is holding up.
+ *
+ * All three mean the same thing to the user — "this will be thrown away, carry
+ * on?" — so all three resolve through the same pair of answers. `create` is the
+ * one that is easy to miss: entering the create form leaves the edit draft on
+ * screen for the moment, but a completed create reassigns the selection, and
+ * the editor re-seeds on a new row id. The edits are gone by then, silently.
+ *
+ * Module scope and exported, along with the wording below, because both panels
+ * render this question. Two copies of the strings is how the same choice ends up
+ * described differently depending on which half of the pane is showing.
+ */
+export type PendingAction =
+  | { kind: 'select'; workPackage: WorkPackage }
+  | { kind: 'close' }
+  | { kind: 'create' }
+
+const PENDING_ACTION_PROMPTS: Record<PendingAction['kind'], string> = {
+  select: 'You have unsaved changes. Switch work package and discard them?',
+  close: 'You have unsaved changes. Close anyway and discard them?',
+  create: 'You have unsaved changes. Start a new work package and discard them?'
+}
+
+/** The question to put to the user for a held action. */
+export function pendingActionPrompt(action: PendingAction): string {
+  return PENDING_ACTION_PROMPTS[action.kind]
 }
 
 export function useWorkPackagesBrowser() {
@@ -351,24 +381,40 @@ export function useWorkPackagesBrowser() {
   const editor = useWorkPackageEditor(selectedWorkPackage)
 
   /**
-   * An action the user asked for that would have thrown unsaved edits away.
+   * Create state, owned here for exactly the reasons the editor is: the *list*
+   * has to consult it (an unsaved create draft blocks a row switch and a close),
+   * and a successful create has to become the selection — which is this ref.
    *
-   * Held rather than performed, so the UI can ask. Both kinds resolve through
-   * the same pair of answers, because to the user they are the same question.
+   * A second composable rather than a mode of the editor; see
+   * `useWorkPackageCreator` for why.
    */
-  type PendingAction =
-    | { kind: 'select'; workPackage: WorkPackage }
-    | { kind: 'close' }
+  const creator = useWorkPackageCreator(selectedWorkPackage)
 
+  /**
+   * Whether anything on screen would be lost by walking away.
+   *
+   * One question with one answer, asked of both halves of the pane. Editing and
+   * creating are mutually exclusive in the UI, but reading them together means
+   * neither can be forgotten when the guard grows a third caller.
+   */
+  const hasUnsavedWork = computed(() => editor.isDirty.value || creator.isDirty.value)
+
+  /**
+   * The action being held, if any — see {@link PendingAction}. Held rather than
+   * performed, so the UI can ask first.
+   */
   const pendingAction = ref<PendingAction | null>(null)
 
   function select(wp: WorkPackage): void {
-    // Re-selecting the row already open is not a switch, and must not prompt.
-    if (wp.id === selectedWorkPackage.value?.id) return
-    if (editor.isDirty.value) {
+    // Re-selecting the row already open is not a switch, and must not prompt —
+    // unless the create panel is covering it, in which case picking that row is
+    // a request to go back to reading it.
+    if (wp.id === selectedWorkPackage.value?.id && !creator.isCreating.value) return
+    if (hasUnsavedWork.value) {
       pendingAction.value = { kind: 'select', workPackage: wp }
       return
     }
+    creator.cancelCreating()
     selectedWorkPackage.value = wp
   }
 
@@ -381,22 +427,56 @@ export function useWorkPackagesBrowser() {
    * component's visibility.
    */
   function requestClose(): boolean {
-    if (!editor.isDirty.value) return true
+    if (!hasUnsavedWork.value) return true
     pendingAction.value = { kind: 'close' }
     return false
   }
 
   /**
-   * Throw the edits away and do what was asked. Returns the kind that was
+   * Ask to enter create mode. **The only way in** — the New action calls this,
+   * never `creator.startCreating()` directly.
+   *
+   * The guard is not decoration here, and it is the least obvious of the three.
+   * Entering the create form does not itself destroy an edit draft: the editor
+   * keeps its state and cancelling comes straight back to it. What destroys it is
+   * *finishing* — `creator.create()` assigns the new work package to the
+   * selection, the editor's watcher sees a different row id, and it re-seeds. By
+   * then the edits are gone with nothing having asked. Guarding the entrance is
+   * what makes that unreachable, and it keeps the rule uniform: every path that
+   * can end in lost work asks the same question, in the same bar, with the same
+   * two answers.
+   *
+   * `canStartCreating` is checked here too, so the precondition holds even
+   * though the button is also disabled — a composable whose invariant lives only
+   * in a template is one refactor from having no invariant.
+   */
+  function requestCreate(): void {
+    if (!creator.canStartCreating.value) return
+    if (hasUnsavedWork.value) {
+      pendingAction.value = { kind: 'create' }
+      return
+    }
+    creator.startCreating()
+  }
+
+  /**
+   * Throw the unsaved work away and do what was asked. Returns the kind that was
    * pending so the caller can finish a close — the one part this composable
    * can't do itself.
+   *
+   * Both halves are cancelled unconditionally *before* the action runs: which of
+   * them was dirty is not worth branching on, cancelling a clean one is a no-op,
+   * and `create` depends on the ordering — the creator has to be reset before it
+   * is started, or a draft the user just discarded would come back with it.
    */
   function discardPendingAction(): PendingAction['kind'] | null {
     const action = pendingAction.value
     pendingAction.value = null
     if (action === null) return null
     editor.cancelEditing()
+    creator.cancelCreating()
     if (action.kind === 'select') selectedWorkPackage.value = action.workPackage
+    if (action.kind === 'create') creator.startCreating()
     return action.kind
   }
 
@@ -491,9 +571,12 @@ export function useWorkPackagesBrowser() {
     selectedWorkPackage,
     select,
 
-    // Editing
+    // Editing + creating
     editor,
+    creator,
+    hasUnsavedWork,
     pendingAction,
+    requestCreate,
     requestClose,
     discardPendingAction,
     keepEditing,

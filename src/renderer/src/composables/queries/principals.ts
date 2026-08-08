@@ -33,6 +33,18 @@ export const principalQueries = {
   availableAssignees: defineQueryOptions((projectId: number) => ({
     key: ['principals', 'available-assignees', projectId],
     query: () => window.openproject.listAvailableAssignees({ projectId })
+  })),
+
+  /**
+   * The user the stored key authenticates as.
+   *
+   * One stable key and no parameters — the identity can't change without the
+   * credentials changing, which reloads the app — so Colada caches it for the
+   * session and every create reads the same copy.
+   */
+  currentUser: defineQueryOptions(() => ({
+    key: ['principals', 'current-user'],
+    query: () => window.openproject.getCurrentUser()
   }))
 }
 

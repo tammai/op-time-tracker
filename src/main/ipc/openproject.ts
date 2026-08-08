@@ -10,8 +10,10 @@ import {
   type UpdateTimeEntryInput,
   type DeleteTimeEntryInput,
   type WorkPackageFormInput,
+  type WorkPackageCreateFormInput,
   type AvailableAssigneesInput,
-  type UpdateWorkPackageInput
+  type UpdateWorkPackageInput,
+  type CreateWorkPackageInput
 } from '../openproject/client'
 import {
   CredentialReadError,
@@ -163,6 +165,20 @@ export function registerOpenProjectIpcHandlers(): void {
     }
   )
 
+  /**
+   * Who the stored key belongs to. Takes no input by design — the identity is
+   * the key's, so the renderer has nothing to say about it.
+   */
+  ipcMain.handle('op:openproject:get-current-user', async () => {
+    try {
+      const creds = await requireCredentials()
+      const client = new OpenProjectClient(creds)
+      return await client.getCurrentUser()
+    } catch (e) {
+      throw toIpcError(e)
+    }
+  })
+
   ipcMain.handle(
     'op:openproject:update-work-package',
     async (_event, input: UpdateWorkPackageInput) => {
@@ -170,6 +186,59 @@ export function registerOpenProjectIpcHandlers(): void {
         const creds = await requireCredentials()
         const client = new OpenProjectClient(creds)
         return await client.updateWorkPackage(input)
+      } catch (e) {
+        throw toIpcError(e)
+      }
+    }
+  )
+
+  /**
+   * The work-package create channels (stage 3).
+   *
+   * `list-projects` is the only one taking no input at all. The other two are
+   * renderer-supplied and therefore untrusted, and each client method
+   * Zod-validates before a request exists:
+   *
+   * - `get-work-package-create-form` is a POST that reads, like its edit-mode
+   *   sibling — but it needs no lock version, so with no type chosen its body is
+   *   empty and with one it is a single href rebuilt in the client from the
+   *   validated integer. Nothing from here is forwarded.
+   * - `create-work-package` sends numeric ids only; the client builds every
+   *   `_links` href and pins the description's `format`
+   *   (`.opencode/rules/security.md`). A 422 comes back as
+   *   `OPENPROJECT_VALIDATION_FAILED` carrying OpenProject's own message, which
+   *   the renderer shows while keeping the draft.
+   */
+  ipcMain.handle('op:openproject:list-projects', async () => {
+    try {
+      const creds = await requireCredentials()
+      const client = new OpenProjectClient(creds)
+      return await client.listProjects()
+    } catch (e) {
+      throw toIpcError(e)
+    }
+  })
+
+  ipcMain.handle(
+    'op:openproject:get-work-package-create-form',
+    async (_event, input: WorkPackageCreateFormInput) => {
+      try {
+        const creds = await requireCredentials()
+        const client = new OpenProjectClient(creds)
+        return await client.getWorkPackageCreateForm(input)
+      } catch (e) {
+        throw toIpcError(e)
+      }
+    }
+  )
+
+  ipcMain.handle(
+    'op:openproject:create-work-package',
+    async (_event, input: CreateWorkPackageInput) => {
+      try {
+        const creds = await requireCredentials()
+        const client = new OpenProjectClient(creds)
+        return await client.createWorkPackage(input)
       } catch (e) {
         throw toIpcError(e)
       }

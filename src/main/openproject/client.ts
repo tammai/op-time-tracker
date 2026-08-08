@@ -8,22 +8,37 @@ import {
   WorkPackageFormResponseSchema,
   WorkPackageFormSchema,
   WorkPackageFormInputSchema,
+  WorkPackageCreateFormResponseSchema,
+  WorkPackageCreateFormSchema,
+  WorkPackageCreateFormInputSchema,
   AvailableAssigneesInputSchema,
   UpdateWorkPackageInputSchema,
+  CreateWorkPackageInputSchema,
   buildWorkPackagePatchPayload,
+  buildWorkPackageCreatePayload,
   normalizeWorkPackageForm,
+  normalizeWorkPackageCreateForm,
   type WorkPackage,
   type WorkPackageCollection,
   type WorkPackageForm,
   type WorkPackageFormInput,
+  type WorkPackageCreateForm,
+  type WorkPackageCreateFormInput,
   type AvailableAssigneesInput,
-  type UpdateWorkPackageInput
+  type UpdateWorkPackageInput,
+  type CreateWorkPackageInput
 } from '../schemas/work-packages'
 import {
   PrincipalCollectionSchema,
+  PrincipalSchema,
+  type Principal,
   type PrincipalCollection
 } from '../schemas/principals'
-import { PROJECT_PATH } from '../../shared/utils/hal'
+import {
+  ProjectCollectionSchema,
+  type ProjectCollection
+} from '../schemas/projects'
+import { PROJECT_PATH, TYPE_PATH, USER_PATH } from '../../shared/utils/hal'
 import {
   TimeEntryCollectionSchema,
   TimeEntrySchema,
@@ -636,6 +651,24 @@ const MAX_FOLLOWED_PAGES = 25
 const AVAILABLE_ASSIGNEES_PAGE_SIZE = 200
 
 /**
+ * Page size for `listProjects`. Same reasoning as the assignees list: the set a
+ * user may create work packages in is a handful to a few dozen, the select has
+ * no pagination, and the ceiling is still enforced through `clampPageSize`.
+ */
+const AVAILABLE_PROJECTS_PAGE_SIZE = 200
+
+/**
+ * The collection of projects a work package may be created in.
+ *
+ * Deliberately not `/api/v3/projects`: that lists what the key can *see*, which
+ * on the probed instance included a project it could not create in. This is the
+ * path the create form's own `project` allowed-values href names — followed by
+ * rebuilding the constant here, never by reading the server's href (PLAN.md,
+ * "Verified API shapes — Stage 3").
+ */
+const AVAILABLE_PROJECTS_PATH = `${WORK_PACKAGE_PATH}/available_projects`
+
+/**
  * The single OpenProject HTTP client. Constructed in the main process with
  * validated `Credentials`; the API key lives only on the instance and is
  * never logged or returned.
@@ -965,6 +998,25 @@ export class OpenProjectClient {
   }
 
   /**
+   * `GET /api/v3/users/me` — who the stored API key belongs to.
+   *
+   * Takes no arguments, and that is the security property rather than an
+   * omission: the identity is whatever the key authenticates as, so there is no
+   * renderer-supplied value anywhere near the path. The create form uses it to
+   * default the assignee to the current user.
+   *
+   * Parsed with `PrincipalSchema` — the same shape `available_assignees`
+   * returns, which is what lets the id be matched against that list rather than
+   * trusted on its own. A user who is not assignable in the chosen project is
+   * simply not offered, so the default falls back to unassigned.
+   */
+  async getCurrentUser(): Promise<Principal> {
+    const url = buildRequestUrl(this.creds.baseUrl, `${USER_PATH}/me`)
+    const body = await this.request(url)
+    return this.parseWithSchema(body, PrincipalSchema)
+  }
+
+  /**
    * `PATCH /api/v3/work_packages/{id}` — a **partial** update.
    *
    * Deliberately unlike `updateTimeEntry`, which is a full replacement. Here
@@ -1000,6 +1052,115 @@ export class OpenProjectClient {
       `${WORK_PACKAGE_PATH}/${parsed.data.id}`
     )
     const body = await this.request(url, { method: 'PATCH', body: payload })
+    return this.parseWithSchema(body, WorkPackageSchema)
+  }
+
+  /**
+   * `GET /api/v3/work_packages/available_projects` — the projects a work
+   * package may be created in.
+   *
+   * The name says `listProjects` because that is what it is *for* — the create
+   * form's project select — but the resource is deliberately the available-
+   * projects collection rather than `/api/v3/projects`. The latter includes
+   * projects the API key can read but not write, and offering one produces a
+   * create that fails only after the user has filled the whole form in. See
+   * `AVAILABLE_PROJECTS_PATH`.
+   *
+   * No filters and no caller-supplied page size: there is one question here
+   * ("where may I create?"), the answer is small, and the select has no
+   * pagination to make use of a larger page.
+   */
+  async listProjects(): Promise<ProjectCollection> {
+    const url = buildRequestUrl(this.creds.baseUrl, AVAILABLE_PROJECTS_PATH, {
+      pageSize: String(clampPageSize(AVAILABLE_PROJECTS_PAGE_SIZE))
+    })
+    const body = await this.request(url)
+    return this.parseWithSchema(body, ProjectCollectionSchema)
+  }
+
+  /**
+   * `POST /api/v3/projects/{id}/work_packages/form` — the allowed values, the
+   * writability, and OpenProject's own defaults for a *new* work package in one
+   * project.
+   *
+   * A POST that reads, on the same terms as `getWorkPackageForm`, but simpler:
+   * this endpoint takes **no** `lockVersion` (there is no revision to be stale
+   * against — an empty `{}` body answers 200, verified against a live instance),
+   * so with no type chosen the body is literally empty. When a type *is* chosen
+   * the body is one href, rebuilt here from the validated integer. Either way
+   * nothing renderer-supplied is forwarded, so this cannot become a write
+   * primitive (`.opencode/rules/security.md`).
+   *
+   * `projectId` is a validated positive integer before it reaches the request
+   * path; an unknown project answers 404.
+   *
+   * The response is flattened out of HAL by `normalizeWorkPackageCreateForm` and
+   * re-`.parse()`d, so the renderer receives `{ id, name }` lists and plain
+   * numeric defaults — never an href, never an `_embedded` block.
+   */
+  async getWorkPackageCreateForm(
+    input: WorkPackageCreateFormInput
+  ): Promise<WorkPackageCreateForm> {
+    const parsed = WorkPackageCreateFormInputSchema.safeParse(input)
+    if (!parsed.success) {
+      throw new OpenProjectInvalidInputError(
+        parsed.error.issues[0]?.message ?? 'The project reference is invalid.',
+        parsed.error
+      )
+    }
+    const { projectId, typeId } = parsed.data
+
+    const url = buildRequestUrl(
+      this.creds.baseUrl,
+      `${PROJECT_PATH}/${projectId}/work_packages/form`
+    )
+    const body = await this.request(url, {
+      method: 'POST',
+      // Rebuilt from the validated integer — never `parsed.data` spread, and
+      // never `input`, so no extra renderer key can ride along.
+      body:
+        typeId === undefined
+          ? {}
+          : { _links: { type: { href: `${TYPE_PATH}/${typeId}` } } }
+    })
+
+    const form = this.parseWithSchema(body, WorkPackageCreateFormResponseSchema)
+    return this.parseWithSchema(
+      normalizeWorkPackageCreateForm(form),
+      WorkPackageCreateFormSchema
+    )
+  }
+
+  /**
+   * `POST /api/v3/work_packages` — create a work package, returning the
+   * Zod-validated one OpenProject echoes back.
+   *
+   * Same trust model as `createTimeEntry` and `updateWorkPackage`: `input`
+   * originates in the renderer, so it is validated *here* rather than at the
+   * caller, `subject` and `description` are length-bounded before anything is
+   * sent, dates must be real calendar days, and every `_links` href is built
+   * from a validated numeric id. Nothing renderer-supplied reaches a path, and
+   * the description's `format` is a main-process constant — a live instance
+   * accepted a client-chosen format without complaint, so this is the only
+   * boundary there is (see `WORK_PACKAGE_DESCRIPTION_FORMAT`).
+   *
+   * No `lockVersion`, unlike the update: there is no prior revision to write
+   * against, so nothing here can conflict. A 422 carries OpenProject's own
+   * message — a required custom field, a type the project stopped allowing —
+   * which the renderer shows while keeping the draft.
+   */
+  async createWorkPackage(input: CreateWorkPackageInput): Promise<WorkPackage> {
+    const parsed = CreateWorkPackageInputSchema.safeParse(input)
+    if (!parsed.success) {
+      throw new OpenProjectInvalidInputError(
+        parsed.error.issues[0]?.message ?? 'The work package details are invalid.',
+        parsed.error
+      )
+    }
+
+    const payload = buildWorkPackageCreatePayload(parsed.data)
+    const url = buildRequestUrl(this.creds.baseUrl, WORK_PACKAGE_PATH)
+    const body = await this.request(url, { method: 'POST', body: payload })
     return this.parseWithSchema(body, WorkPackageSchema)
   }
 
@@ -1183,9 +1344,13 @@ export {
   WorkPackageCollectionSchema,
   WorkPackageFormSchema,
   WorkPackageFormInputSchema,
+  WorkPackageCreateFormSchema,
+  WorkPackageCreateFormInputSchema,
   AvailableAssigneesInputSchema,
   UpdateWorkPackageInputSchema,
+  CreateWorkPackageInputSchema,
   PrincipalCollectionSchema,
+  ProjectCollectionSchema,
   TimeEntryCollectionSchema,
   TimeEntryActivityCollectionSchema,
   CreateTimeEntryInputSchema,
@@ -1200,7 +1365,11 @@ export type {
   TimeEntryActivityCollection,
   WorkPackageForm,
   WorkPackageFormInput,
+  WorkPackageCreateForm,
+  WorkPackageCreateFormInput,
   AvailableAssigneesInput,
   UpdateWorkPackageInput,
-  PrincipalCollection
+  CreateWorkPackageInput,
+  PrincipalCollection,
+  ProjectCollection
 }

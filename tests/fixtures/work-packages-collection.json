@@ -9,6 +9,11 @@
         "_type": "WorkPackage",
         "lockVersion": 4,
         "subject": "Fix login bug",
+        "description": {
+          "format": "markdown",
+          "raw": "Session cookie is dropped on redirect.",
+          "html": "<p class=\"op-uc-p\">Session cookie is dropped on redirect.</p>"
+        },
         "type": "Task",
         "status": "In Progress",
         "startDate": "2026-01-15",

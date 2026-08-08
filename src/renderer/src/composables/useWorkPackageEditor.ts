@@ -56,9 +56,17 @@ export interface EditableFieldState {
   reason: string | null
 }
 
-/** The fields the panel renders. */
+/**
+ * The fields the panel renders — shared with the create form, which mounts the
+ * same component and therefore has to answer for the same set.
+ *
+ * `description` joined it in Stage 3 (the spec's "Deliberate scope widening"):
+ * it was added to the shared component for the create form, which makes it
+ * editable here too.
+ */
 export type WorkPackageFieldName =
   | 'subject'
+  | 'description'
   | 'startDate'
   | 'dueDate'
   | 'status'
@@ -269,7 +277,9 @@ export function useWorkPackageEditor(selected: Ref<WorkPackage | null>) {
     const loaded = form.value
     const failed = formError.value !== null
 
-    const plain = (name: 'subject' | 'startDate' | 'dueDate'): EditableFieldState => {
+    const plain = (
+      name: 'subject' | 'description' | 'startDate' | 'dueDate'
+    ): EditableFieldState => {
       if (loaded && !loaded[name].writable) {
         return { disabled: true, reason: NOT_WRITABLE_REASON }
       }
@@ -306,6 +316,7 @@ export function useWorkPackageEditor(selected: Ref<WorkPackage | null>) {
 
     return {
       subject: plain('subject'),
+      description: plain('description'),
       startDate: plain('startDate'),
       dueDate: plain('dueDate'),
       status: enumerated('status', statusOptions.value),

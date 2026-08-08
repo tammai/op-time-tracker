@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 
 import {
+  formattableRaw,
   parseActivityIdFromHref,
   parseWorkPackageIdFromHref
 } from '~~/src/shared/utils/hal'
@@ -79,5 +80,44 @@ describe('parseWorkPackageIdFromHref', () => {
       parseWorkPackageIdFromHref('/api/v3/time_entries/activities/5')
     ).toBeNull()
     expect(parseActivityIdFromHref('/api/v3/work_packages/5')).toBeNull()
+  })
+})
+
+/**
+ * A Formattable arrives in three spellings depending on the instance, and both
+ * trees read it — the detail panel to display a description, the draft to seed
+ * the field that edits it. Untangling it in one place is what keeps those two
+ * from disagreeing about what "empty" means.
+ */
+describe('formattableRaw', () => {
+  it('reads the raw text out of the object form', () => {
+    expect(
+      formattableRaw({ format: 'markdown', raw: 'Body', html: '<p>Body</p>' })
+    ).toBe('Body')
+  })
+
+  it('accepts the bare-string form older instances send', () => {
+    expect(formattableRaw('Plain text')).toBe('Plain text')
+  })
+
+  it('reads an absent value as empty, however it is absent', () => {
+    expect(formattableRaw(null)).toBe('')
+    expect(formattableRaw(undefined)).toBe('')
+    expect(formattableRaw({})).toBe('')
+    expect(formattableRaw({ format: 'markdown', raw: null })).toBe('')
+  })
+
+  it('never returns the server’s rendered html', () => {
+    // `html` is the server's rendering of `raw`; the editor writes `raw`, and
+    // handing rendered markup to a field that edits source would be wrong twice.
+    expect(formattableRaw({ raw: '**bold**', html: '<strong>bold</strong>' })).toBe(
+      '**bold**'
+    )
+  })
+
+  it('preserves whitespace — markdown reads trailing spaces as a line break', () => {
+    expect(formattableRaw({ raw: 'line one  \nline two\n' })).toBe(
+      'line one  \nline two\n'
+    )
   })
 })

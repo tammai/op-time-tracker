@@ -49,6 +49,7 @@ function wp(overrides: Partial<WorkPackage> = {}): WorkPackage {
 
 const FORM = {
   subject: { writable: true },
+  description: { writable: true },
   startDate: { writable: true },
   dueDate: { writable: true },
   assignee: { writable: true },
@@ -138,6 +139,7 @@ describe('useWorkPackageEditor — seeding and dirty tracking', () => {
     await flush()
     expect(editor.draft.value).toEqual({
       subject: 'Fix login bug',
+      description: '',
       startDate: '2026-01-15',
       dueDate: '2026-01-22',
       statusId: 3,

@@ -24,15 +24,21 @@ import type {
   WorkPackageLinks,
   WorkPackageForm,
   WorkPackageFormField,
+  WorkPackageCreateForm,
+  WorkPackageCreateDefaults,
   AllowedValue,
+  Formattable,
   WorkPackageFormInput,
+  WorkPackageCreateFormInput,
   AvailableAssigneesInput,
-  UpdateWorkPackageInput
+  UpdateWorkPackageInput,
+  CreateWorkPackageInput
 } from '../main/schemas/work-packages'
 import type {
   Principal,
   PrincipalCollection
 } from '../main/schemas/principals'
+import type { Project, ProjectCollection } from '../main/schemas/projects'
 import type {
   TimeEntry,
   TimeEntryCollection,
@@ -70,12 +76,19 @@ export type {
   WorkPackageLinks,
   WorkPackageForm,
   WorkPackageFormField,
+  WorkPackageCreateForm,
+  WorkPackageCreateDefaults,
   AllowedValue,
+  Formattable,
   WorkPackageFormInput,
+  WorkPackageCreateFormInput,
   AvailableAssigneesInput,
   UpdateWorkPackageInput,
+  CreateWorkPackageInput,
   Principal,
   PrincipalCollection,
+  Project,
+  ProjectCollection,
   TimeEntry,
   TimeEntryCollection,
   TimeEntryLinks,
@@ -353,6 +366,20 @@ export interface OpenProjectBridge {
   ): Promise<PrincipalCollection>
 
   /**
+   * The user the stored API key authenticates as (`GET /api/v3/users/me`).
+   *
+   * Takes no input, deliberately: the identity is the key's, so there is
+   * nothing for the renderer to name and nothing that could steer the request.
+   * The create form uses the returned `id` to default the assignee — matched
+   * against `listAvailableAssignees` first, so a user who cannot be assigned in
+   * the chosen project simply isn't defaulted.
+   *
+   * Returns a `Principal`, the same shape the assignee list holds. Rejects with
+   * `{ code, message }` on auth / network / schema errors.
+   */
+  getCurrentUser(): Promise<Principal>
+
+  /**
    * Update a work package, returning it as OpenProject echoes it back.
    *
    * **A partial update, not a replacement** — the opposite of
@@ -378,6 +405,71 @@ export interface OpenProjectBridge {
    * `OPENPROJECT_NOT_FOUND` when the work package is gone.
    */
   updateWorkPackage(input: UpdateWorkPackageInput): Promise<WorkPackage>
+
+  /**
+   * The projects a work package may be **created** in.
+   *
+   * Reads `GET /api/v3/work_packages/available_projects`, not
+   * `GET /api/v3/projects`: the latter lists what the API key can see, which
+   * includes projects it cannot create in, and offering one produces a create
+   * that fails only after the form is filled in. An empty collection is a real
+   * answer — this key may create nowhere — not an error.
+   *
+   * Rejects with `{ code, message }` on auth / network / schema errors.
+   */
+  listProjects(): Promise<ProjectCollection>
+
+  /**
+   * The schema for a *new* work package in one project: which fields are
+   * writable, which values type/status/priority allow there, and which ones
+   * OpenProject would pick by default.
+   *
+   * Project-scoped, which is the shape of the whole create flow — until a
+   * project is chosen there are no legal types, statuses or assignees, and
+   * changing it invalidates all three.
+   *
+   * A POST that reads, like `getWorkPackageForm`, but it takes **no lock
+   * version**: nothing exists yet to be stale against, so an empty payload is
+   * accepted. Only `typeId` ever reaches the body, as one href the main process
+   * rebuilds from the validated integer — nothing supplied here is forwarded,
+   * so this channel cannot be used as a write. `typeId` is optional and matters
+   * only on instances whose status workflows differ per type.
+   *
+   * `defaults` carries OpenProject's own initial `{ typeId, statusId,
+   * priorityId }`, each `null` when the form offered none. Allowed values arrive
+   * flattened to `{ id, name }[]` — no href, no `_embedded` block.
+   *
+   * Rejects with `{ code, message }`: `OPENPROJECT_INVALID_INPUT` for a bad
+   * project or type id (before any request), `OPENPROJECT_NOT_FOUND` when the
+   * project is gone or invisible to the configured key.
+   */
+  getWorkPackageCreateForm(
+    input: WorkPackageCreateFormInput
+  ): Promise<WorkPackageCreateForm>
+
+  /**
+   * Create a work package, returning it as OpenProject echoes it back.
+   *
+   * `projectId`, `typeId` and `subject` are required; everything else is
+   * optional and simply not sent when absent, so OpenProject applies its own
+   * default. Unlike `updateWorkPackage`, `null` is not accepted anywhere: there
+   * is no stored value to clear on something that does not exist yet, and a
+   * nullable field would be a second spelling of "absent".
+   *
+   * Same trust model as the rest of the write surface: plain numeric ids only,
+   * all Zod-validated in the main process (`CreateWorkPackageInputSchema`), with
+   * every `_links` href built there. `subject` and `description` are
+   * length-bounded before any request, and the description's `format` is
+   * **pinned in the main process** — a live instance accepted a client-chosen
+   * format without complaint, so nothing downstream polices it.
+   *
+   * Rejects with `{ code, message }`: `OPENPROJECT_INVALID_INPUT` (bad input, no
+   * request made), `OPENPROJECT_VALIDATION_FAILED` carrying OpenProject's own
+   * message when it refuses the work package (a required custom field, a type
+   * the project no longer allows) — the caller keeps the draft and shows it —
+   * and `OPENPROJECT_NOT_FOUND` when the project is gone.
+   */
+  createWorkPackage(input: CreateWorkPackageInput): Promise<WorkPackage>
 }
 
 declare global {

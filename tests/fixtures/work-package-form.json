@@ -44,6 +44,14 @@
         "maxLength": 255,
         "options": {}
       },
+      "description": {
+        "type": "Formattable",
+        "name": "Description",
+        "required": false,
+        "hasDefault": false,
+        "writable": true,
+        "options": {}
+      },
       "startDate": {
         "type": "Date",
         "name": "Start date",

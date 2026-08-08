@@ -107,6 +107,20 @@ because a server-reported limit cannot be a security boundary. Assignees may be
 offers users only, since the PATCH builds `/api/v3/users/{id}` from a bare
 number and cannot express a group href.
 
+## Creating a work package
+
+Probed the same way, and again three things the docs imply that the instance contradicts.
+
+- **`GET /api/v3/projects` is the wrong list for a create form.** It answers with every project the key can *read*, which included one carrying no `_links.createWorkPackage` — visible, not creatable. The create form's own `project._links.allowedValues` points at **`GET /api/v3/work_packages/available_projects`**, which returns exactly the creatable subset in an identical `Collection` shape. `listProjects` reads that path, rebuilt in main from a constant rather than followed off the response.
+- **`POST /projects/{id}/work_packages/form` needs no `lockVersion`** — an empty `{}` body answers 200, unlike the *edit* form, which 409s. So the create-form body is empty until a type is chosen, and one rebuilt href after.
+- **`_embedded.payload._links` carries OpenProject's defaults** — type, status and priority. Prefilling from them is what leaves only project/type/subject genuinely required, and `schema.status.hasDefault` is `true` while `schema.type.hasDefault` is `false` even though the payload names a type.
+
+Also verified: **a type the project disallows answers 200**, with the objection buried in `_embedded.validationErrors.type`, and the allowed-value lists *unchanged*. So a stale type after a project change produces a form that looks fine and a create that fails — which is why the reset is eager and lives in `resetProjectScopedFields` (named by what it keeps, so a new draft field is reset by default). Allowed values did not vary with the type sent on this instance, so the renderer keys the create form on the project alone.
+
+**`description` is a Formattable, `format: "markdown"`, and the server does not police the format**: a payload with `format: "custom"` and an `html` of `<script>alert(1)</script>` validated **clean**. The format is therefore a main-process constant (`WORK_PACKAGE_DESCRIPTION_FORMAT`) on both the create and the update path, and `html` is never sent. Length is bounded in main too — OpenProject imposes no limit worth trusting.
+
+The form endpoint doubles as a **validator**: POST a complete payload and it answers with `validationErrors` and a `_links.commit` pointing at the real `POST /api/v3/work_packages`, without persisting anything. That is how the create body was verified without creating a work package.
+
 ## Diagnosing the next one
 
 `parseWithSchema` logs the failing field path, the Zod issue code, and the
