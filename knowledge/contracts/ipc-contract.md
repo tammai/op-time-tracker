@@ -27,6 +27,17 @@ Invariants specific to the write path:
 - Errors add two codes: `OPENPROJECT_INVALID_INPUT` (our own validation, pre-request) and `OPENPROJECT_VALIDATION_FAILED` (the 422). Update and delete also surface `OPENPROJECT_NOT_FOUND` for an entry that is gone or invisible to the configured key.
 - **`deleteTimeEntry` returns nothing** — OpenProject answers 204 with an empty body. It is irreversible; there is no server-side undo, so the UI confirms before calling it.
 
+## Shell surface
+`openWorkPackageInBrowser({ workPackageId })` is the one channel that hands a URL to the **operating system** rather than to OpenProject. It is on a separate `op:shell:*` channel prefix, handled by `src/main/ipc/shell.ts`, and makes no HTTP request at all.
+
+- **A number crosses IPC, never a URL.** The id is Zod-validated as a positive integer *before credentials are read*; every other key on the input is ignored. The main process builds `<baseUrl>/work_packages/<id>` itself from the **stored** base URL.
+- **Never from `_links.self.href`.** That field is server-supplied, so a hostile instance could otherwise carry an arbitrary href straight into `shell.openExternal`.
+- **http(s) is re-asserted at the sink**, after the credential schema has already enforced it — so a hand-edited store cannot turn this into a `file:`/`smb:` launch.
+- This handler reads `getConnectionInfo()`, not `getCredentials()`: it needs only the non-secret base URL, so the API key is never decrypted on this path and never appears in the opened URL.
+- Codes: `SHELL_INVALID_INPUT`, `SHELL_UNSAFE_TARGET`, `SHELL_OPEN_FAILED`, plus `CREDENTIAL_NOT_CONFIGURED` when no usable URL is stored.
+
+`toIpcError()` passes an already-constructed `IpcError` through unchanged, which is what lets a handler raise its own typed code without it being flattened to `OPENPROJECT_UNKNOWN`.
+
 ## Credential read-back
 There is still no getter for the API key. `getConnectionInfo()` returns only `{ baseUrl, hasApiKey }` — the URL is not secret, `hasApiKey` is presence only — so the settings form can prefill what's configured without the key ever crossing IPC. Consequently `apiKey` is **optional** on `saveCredentials` and `testConnection`: blank means "use/keep the stored key", resolved inside the main process. A blank key with nothing stored is a validation error.
 

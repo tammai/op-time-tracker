@@ -130,6 +130,18 @@ export interface ListTimeEntryActivitiesInput {
   workPackageId?: number
 }
 
+/**
+ * Input for `openWorkPackageInBrowser`.
+ *
+ * A numeric id and nothing else — deliberately not a URL, an href, or a path.
+ * The main process builds the URL itself from the stored base URL, so the
+ * renderer has no way to influence what is handed to the operating system.
+ * See `src/main/ipc/shell.ts`.
+ */
+export interface OpenWorkPackageInBrowserInput {
+  workPackageId: number
+}
+
 export interface OpenProjectBridge {
   /**
    * Scaffold-only placeholder. Confirms the preload bridge is wired.
@@ -252,6 +264,28 @@ export interface OpenProjectBridge {
   listTimeEntryActivities(
     input?: ListTimeEntryActivitiesInput
   ): Promise<TimeEntryActivityCollection>
+
+  /**
+   * Open a work package in the user's default browser. Resolves once the OS
+   * has accepted the request — there is nothing to return.
+   *
+   * The only value crossing IPC is the numeric `workPackageId`. The main
+   * process Zod-validates it as a positive integer and builds
+   * `<baseUrl>/work_packages/<id>` from the **stored** base URL; it never
+   * builds the URL from a server-supplied `_links.self.href`, and it
+   * re-asserts http(s) before handing anything to the OS. The API key is not
+   * involved and never appears in the opened URL.
+   *
+   * Rejects with `{ code, message }`: `SHELL_INVALID_INPUT` for anything that
+   * isn't a positive integer id (rejected before credentials are even read),
+   * `CREDENTIAL_NOT_CONFIGURED` when no usable OpenProject URL is stored,
+   * `SHELL_UNSAFE_TARGET` if the resolved URL is not http(s), and
+   * `SHELL_OPEN_FAILED` when the OS refuses to open it (no handler
+   * registered for the scheme). See `.opencode/rules/security.md`.
+   */
+  openWorkPackageInBrowser(
+    input: OpenWorkPackageInBrowserInput
+  ): Promise<void>
 }
 
 declare global {

@@ -41,6 +41,11 @@
  * `fetch` is mocked separately per test via `vi.stubGlobal('fetch', ...)`.
  * Internal collaborators (`OpenProjectClient`, Zod schemas, the credential
  * module) are wired against their real implementations.
+ *
+ * `shell.openExternal` is stubbed here for the same reason `fetch` is mocked:
+ * it is a true I/O boundary — it hands a URL to the operating system. The stub
+ * *records every argument it receives*, which is what lets a test assert the
+ * security invariant that no renderer-supplied string ever reaches it.
  */
 
 // ESM imports for node builtins. This helper is an ESM module (loaded via
@@ -79,6 +84,17 @@ export interface ElectronStub {
   makeUserDataDir: () => string
   /** Remove the given tmp `userData` dir (afterEach / afterAll cleanup). */
   cleanupUserDataDir: (dir: string) => void
+  /**
+   * Every argument `shell.openExternal` was called with, in order — the raw
+   * values, so a test can assert what actually reached the OS boundary (and
+   * that nothing reached it at all on a rejection path).
+   */
+  openExternalCalls: () => unknown[]
+  /**
+   * Replace what `shell.openExternal` does. Default resolves; pass a rejecting
+   * implementation to exercise "no handler registered on the OS".
+   */
+  setOpenExternalImpl: (impl: (url: unknown) => Promise<void>) => void
 }
 
 /**
@@ -157,6 +173,20 @@ export function createElectronStub(): ElectronStub {
 
   const ipcMain = { handle, on, removeHandler }
 
+  // `shell.openExternal` hands a URL to the operating system, so it is stubbed
+  // rather than exercised. Arguments are recorded untyped (`unknown`) on
+  // purpose: a test asserting "no renderer string reached the sink" has to see
+  // whatever was actually passed, not a value already narrowed to `string`.
+  let openExternalCalls: unknown[] = []
+  let openExternalImpl: (url: unknown) => Promise<void> = () => Promise.resolve()
+
+  function openExternal(url: unknown): Promise<void> {
+    openExternalCalls.push(url)
+    return openExternalImpl(url)
+  }
+
+  const shell = { openExternal }
+
   // The `electron` module mock. The real `electron` package is CJS
   // (`module.exports = { app, ipcMain, safeStorage, ... }`), so ESM
   // consumers import it two ways:
@@ -171,7 +201,8 @@ export function createElectronStub(): ElectronStub {
   const electronModule: Record<string, unknown> = {
     app,
     ipcMain,
-    safeStorage
+    safeStorage,
+    shell
   }
   electronModule.default = electronModule
 
@@ -186,6 +217,10 @@ export function createElectronStub(): ElectronStub {
         userDataDir = opts.userDataDir
       }
       handlers.clear()
+      // A recorded call from a previous test would make "openExternal was never
+      // called" pass or fail for the wrong reason.
+      openExternalCalls = []
+      openExternalImpl = () => Promise.resolve()
     },
     async invoke(channel: string, ...args: unknown[]): Promise<unknown> {
       const handler = handlers.get(channel)
@@ -215,6 +250,12 @@ export function createElectronStub(): ElectronStub {
       } catch {
         /* ignore — best-effort cleanup */
       }
+    },
+    openExternalCalls() {
+      return [...openExternalCalls]
+    },
+    setOpenExternalImpl(impl: (url: unknown) => Promise<void>) {
+      openExternalImpl = impl
     }
   }
 }

@@ -162,6 +162,15 @@ async function requireCredentials() {
  * the raw response body — only a stable `code` and a human-facing `message`.
  */
 export function toIpcError(e: unknown): IpcError {
+  // Already normalized — hand it straight back. A handler that raises its own
+  // typed failure (`src/main/ipc/shell.ts` does, for input, target, and sink
+  // errors) still funnels through here for the unexpected cases, and without
+  // this branch its code would be flattened to `OPENPROJECT_UNKNOWN` on the way
+  // out. An `IpcError` can only be constructed by our own code, with a message
+  // already written for the renderer, so passing it through leaks nothing.
+  if (e instanceof IpcError) {
+    return e
+  }
   if (e instanceof OpenProjectError) {
     return new IpcError(e.code, e.message)
   }

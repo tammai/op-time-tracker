@@ -21,6 +21,23 @@ export const useUiStore = defineStore('ui', () => {
   /** Day modal. */
   const isDayModalOpen = ref(false)
 
+  /** Work-packages browse modal. */
+  const isWorkPackagesOpen = ref(false)
+
+  /**
+   * Whether the work-packages modal has ever been opened.
+   *
+   * It gates the modal's *mount* in `App.vue`, separately from its visibility,
+   * for two reasons. Mounting it up front would fire its work-packages and
+   * statuses queries at app start, before the user has asked for any of it —
+   * the same reason the calendar header is its own component. And a plain
+   * `v-if` on `isWorkPackagesOpen` would unmount the modal the instant it
+   * closes, cutting off its own close transition. Latching on first open gives
+   * both: nothing loads until asked, and once loaded the list stays warm so
+   * reopening is instant.
+   */
+  const hasOpenedWorkPackages = ref(false)
+
   /**
    * The day the modal is logging against, as `YYYY-MM-DD`. `null` only
    * before the modal has ever been opened — the modal itself is never
@@ -30,6 +47,12 @@ export const useUiStore = defineStore('ui', () => {
 
   function openSettings(): void {
     isSettingsOpen.value = true
+  }
+
+  /** Open the work-packages browse modal — called from the header. */
+  function openWorkPackages(): void {
+    hasOpenedWorkPackages.value = true
+    isWorkPackagesOpen.value = true
   }
 
   /** Open the day modal for `date` — called from a calendar cell. */
@@ -50,8 +73,11 @@ export const useUiStore = defineStore('ui', () => {
   return {
     isSettingsOpen,
     isDayModalOpen,
+    isWorkPackagesOpen,
+    hasOpenedWorkPackages,
     activeDate,
     openSettings,
+    openWorkPackages,
     openDay,
     closeDay
   }

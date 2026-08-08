@@ -8,7 +8,8 @@ import type {
   ListTimeEntryActivitiesInput,
   CreateTimeEntryInput,
   UpdateTimeEntryInput,
-  DeleteTimeEntryInput
+  DeleteTimeEntryInput,
+  OpenWorkPackageInBrowserInput
 } from './types'
 
 const bridge: OpenProjectBridge = {
@@ -51,7 +52,14 @@ const bridge: OpenProjectBridge = {
   deleteTimeEntry: (input: DeleteTimeEntryInput) =>
     ipcRenderer.invoke('op:openproject:delete-time-entry', input),
   listTimeEntryActivities: (input?: ListTimeEntryActivitiesInput) =>
-    ipcRenderer.invoke('op:openproject:list-time-entry-activities', input)
+    ipcRenderer.invoke('op:openproject:list-time-entry-activities', input),
+
+  // The one channel that hands a URL to the operating system. It takes a
+  // numeric id, never a URL — the main process builds the target itself from
+  // the stored base URL and re-asserts http(s) before opening it. See
+  // `src/main/ipc/shell.ts` and `.opencode/rules/security.md`.
+  openWorkPackageInBrowser: (input: OpenWorkPackageInBrowserInput) =>
+    ipcRenderer.invoke('op:shell:open-work-package', input)
 }
 
 // Expose only the narrowly-typed bridge — never the API key, never a generic
@@ -70,6 +78,7 @@ export type {
   CreateTimeEntryInput,
   UpdateTimeEntryInput,
   DeleteTimeEntryInput,
+  OpenWorkPackageInBrowserInput,
   WorkPackage,
   WorkPackageCollection,
   WorkPackageLinks,

@@ -4,8 +4,8 @@ import { useUiStore } from '@renderer/stores/useUiStore'
 
 /**
  * The app's single top row: calendar title (bold month, normal year) on the
- * left, the month total centred, and month navigation plus the two icon
- * actions on the right, each in its own `UFieldGroup`. There is no app title.
+ * left, the month total centred, and month navigation plus the icon actions on
+ * the right — work packages, then settings. There is no app title.
  *
  * A plain `<header>` rather than `UDashboardNavbar`: with no sidebar, no
  * panel splitting and no second view, none of the dashboard chrome earned its
@@ -63,8 +63,9 @@ const {
       />
     </div>
 
-    <!-- Right: month navigation, then the settings action. The gap separates
-         them; buttons *within* a `UFieldGroup` stay flush by design.
+    <!-- Right: month navigation, then the work-packages and settings actions.
+         The gap separates them; buttons *within* a `UFieldGroup` stay flush by
+         design.
          `subtle` throughout, matching the day modal's row actions — `soft`
          has no ring, so a grouped set of them reads as one unsplit slab. -->
     <div class="flex flex-1 items-center justify-end gap-3">
@@ -90,6 +91,17 @@ const {
           @click="nextMonth"
         />
       </UFieldGroup>
+
+      <UTooltip text="Work packages">
+        <UButton
+          color="neutral"
+          variant="subtle"
+          size="md"
+          icon="i-lucide-list-checks"
+          aria-label="Work packages"
+          @click="ui.openWorkPackages"
+        />
+      </UTooltip>
 
       <UTooltip text="Settings">
         <UButton

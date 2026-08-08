@@ -5,6 +5,7 @@ import OnboardingView from './views/OnboardingView.vue'
 import CalendarView from './views/CalendarView.vue'
 import DayEntriesModal from './components/DayEntriesModal.vue'
 import SettingsModal from './components/SettingsModal.vue'
+import WorkPackagesModal from './components/WorkPackagesModal.vue'
 import CalendarHeader from './components/CalendarHeader.vue'
 import { useUiStore } from './stores/useUiStore'
 
@@ -95,6 +96,15 @@ function onDisconnected(): void {
         v-if="ui.activeDate"
         v-model:open="ui.isDayModalOpen"
         :date="ui.activeDate"
+      />
+
+      <!-- Mounted only once the user has asked for it, so its queries don't
+           fire at app start; kept mounted afterwards so closing it doesn't cut
+           off its own transition, and so reopening finds the list warm. See
+           `hasOpenedWorkPackages` in `useUiStore`. -->
+      <WorkPackagesModal
+        v-if="ui.hasOpenedWorkPackages"
+        v-model:open="ui.isWorkPackagesOpen"
       />
 
       <SettingsModal

@@ -3,6 +3,7 @@ import { fileURLToPath, URL } from 'node:url'
 import { registerCredentialIpcHandlers } from './ipc/credentials'
 import { registerTestConnectionIpcHandler } from './ipc/test-connection'
 import { registerOpenProjectIpcHandlers } from './ipc/openproject'
+import { registerShellIpcHandlers } from './ipc/shell'
 
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
@@ -59,6 +60,7 @@ app.whenReady().then(() => {
   registerCredentialIpcHandlers()
   registerTestConnectionIpcHandler()
   registerOpenProjectIpcHandlers()
+  registerShellIpcHandlers()
   createWindow()
 
   app.on('activate', () => {

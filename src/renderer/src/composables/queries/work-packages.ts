@@ -1,6 +1,12 @@
-import { defineQuery, defineQueryOptions, useQuery } from '@pinia/colada'
+import {
+  defineQuery,
+  defineQueryOptions,
+  useMutation,
+  useQuery
+} from '@pinia/colada'
 import { computed } from 'vue'
 import type {
+  OpenWorkPackageInBrowserInput,
   WorkPackageCollection,
   WorkPackageFilters
 } from '@opentracker/preload'
@@ -11,7 +17,7 @@ import {
   sortByStatusPriority
 } from '@renderer/utils/work-package-filter'
 
-import { statusQueries } from './statuses'
+import { useStatusResolution } from './statuses'
 
 /**
  * Work Packages domain query options.
@@ -105,6 +111,28 @@ export type WorkPackageListQuery = typeof workPackageQueries.list
 const PRIORITY_PAGE_SIZE = 100
 
 /**
+ * `PRIMARY_STATUSES` resolved to the status resource IDs OpenProject's
+ * `status` filter `=` operator requires.
+ *
+ * The work-package domain owns *which* statuses count as primary; the
+ * statuses domain owns how a title becomes an ID (`useStatusResolution`).
+ * Both `usePriorityWorkPackages` (the time-entry picker) and
+ * `useWorkPackagesBrowser` (the browse screen) narrow to the same
+ * mine-and-open set, so they share this rather than each re-deriving it.
+ *
+ * `statusIds` is empty both when the statuses query failed and when the
+ * instance simply doesn't use these titles. Callers must handle those
+ * identically: omit the server-side filter and narrow with
+ * `isPriorityWorkPackage` instead, so the list is never empty merely because
+ * an ID didn't resolve.
+ */
+export function usePrimaryStatusIds() {
+  const { resolveStatusIds, isSettled } = useStatusResolution()
+  const statusIds = computed(() => resolveStatusIds(PRIMARY_STATUSES))
+  return { statusIds, isSettled }
+}
+
+/**
  * The user's priority work packages — the options for the time-entry form's
  * work-package select.
  *
@@ -121,28 +149,11 @@ const PRIORITY_PAGE_SIZE = 100
  * sees something.
  */
 export const usePriorityWorkPackages = defineQuery(() => {
-  const { data: statusesData, status: statusesStatus } = useQuery(
-    statusQueries.list()
-  )
-
-  /** Lowercased status `name` → status resource `id`. */
-  const statusTitleToId = computed(() => {
-    const map = new Map<string, number>()
-    for (const s of statusesData.value?._embedded.elements ?? []) {
-      map.set(s.name.toLowerCase(), s.id)
-    }
-    return map
-  })
-
-  /** `PRIMARY_STATUSES` resolved to stringified IDs; missing titles dropped. */
-  const resolvedStatusIds = computed(() =>
-    PRIMARY_STATUSES.map((title) => statusTitleToId.value.get(title.toLowerCase()))
-      .filter((id): id is number => id !== undefined)
-      .map((id) => String(id))
-  )
-
-  /** True once the statuses query has settled (either way). */
-  const statusesLoaded = computed(() => statusesStatus.value !== 'pending')
+  // The title→ID resolution itself lives in `usePrimaryStatusIds()` so the
+  // browse screen shares it verbatim. This composable's own public shape is
+  // unchanged — `TimeEntryForm` depends on it.
+  const { statusIds: resolvedStatusIds, isSettled: statusesLoaded } =
+    usePrimaryStatusIds()
 
   // The options factory call sits inside the getter `useQuery` takes, so the
   // filters (and therefore the key) re-derive once the status IDs resolve.
@@ -191,5 +202,25 @@ export const usePriorityWorkPackages = defineQuery(() => {
 
   return { ...query, items, isInitialLoading, isTruncated }
 })
+
+/**
+ * Open a work package in the user's default browser.
+ *
+ * A mutation rather than a query because it is a command with a side effect,
+ * and it lives here rather than being called from a component because
+ * `.opencode/rules/conventions-frontend.md` admits no direct
+ * `window.openproject.*` call from a component — the bridge is reached through
+ * this layer or not at all.
+ *
+ * Nothing is invalidated: this changes no OpenProject state, it only asks the
+ * OS to open a page. The input is the numeric id and nothing else — the main
+ * process builds the URL from the stored base URL (`src/main/ipc/shell.ts`).
+ */
+export function useOpenWorkPackageInBrowser() {
+  return useMutation<void, OpenWorkPackageInBrowserInput>({
+    mutation: (input: OpenWorkPackageInBrowserInput) =>
+      window.openproject.openWorkPackageInBrowser(input)
+  })
+}
 
 export type { WorkPackageCollection, WorkPackageFilters }
