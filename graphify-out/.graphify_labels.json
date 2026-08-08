@@ -106,5 +106,10 @@
   "104": "AI Task Guide",
   "105": "TimeEntryActivityCollection",
   "106": "graph.md",
-  "107": "security.md"
+  "107": "security.md",
+  "108": "Current State",
+  "109": "CalendarView.vue",
+  "110": "SettingsModal.vue",
+  "111": "CalendarHeader.vue",
+  "112": "OnboardingView.vue"
 }

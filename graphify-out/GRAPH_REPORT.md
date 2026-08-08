@@ -1,16 +1,16 @@
 # Graph Report - op-time-tracker  (2026-08-08)
 
 ## Corpus Check
-- 148 files · ~156,237 words
+- 150 files · ~156,288 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1121 nodes · 1749 edges · 108 communities (62 shown, 46 thin omitted)
+- 1141 nodes · 1738 edges · 113 communities (65 shown, 48 thin omitted)
 - Extraction: 98% EXTRACTED · 2% INFERRED · 0% AMBIGUOUS · INFERRED: 36 edges (avg confidence: 0.82)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `e913679f`
+- Built from commit: `af901898`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -119,18 +119,23 @@
 - TimeEntryActivityCollection
 - graph.md
 - security.md
+- Current State
+- CalendarView.vue
+- SettingsModal.vue
+- CalendarHeader.vue
+- OnboardingView.vue
 
 ## God Nodes (most connected - your core abstractions)
 1. `OpenProjectBridge` - 24 edges
 2. `OpenProjectClient` - 23 edges
-3. `WorkPackage` - 21 edges
-4. `registerOpenProjectIpcHandlers()` - 20 edges
-5. `buildRequestUrl()` - 20 edges
+3. `registerOpenProjectIpcHandlers()` - 20 edges
+4. `buildRequestUrl()` - 20 edges
+5. `WorkPackage` - 19 edges
 6. `compilerOptions` - 17 edges
 7. `OpenProjectError` - 14 edges
 8. `TimeEntry` - 14 edges
-9. `isCalendarDate()` - 13 edges
-10. `scripts` - 12 edges
+9. `scripts` - 12 edges
+10. `parseHoursToDecimal()` - 11 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `CI quality job (lint/build/typecheck/test/knowledge validate)` --conceptually_related_to--> `Renderer hardening (contextIsolation/nodeIntegration/sandbox)`  [AMBIGUOUS]
@@ -156,56 +161,35 @@
 - **Packaging & Distribution Pipeline (electron-builder config + playbook rationale + README procedure)** — electron-builder_mac_config, electron-builder_win_config, knowledge_playbooks_packaging-distribution_unsigned_deliberately, readme_release_procedure [INFERRED 0.85]
 - **Calendar Month View Components** — docs_images_calendar_month_view_pn_calendar_month_view_screenshot, docs_images_calendar_month_view_pn_month_grid_layout, docs_images_calendar_month_view_pn_day_cell, docs_images_calendar_month_view_pn_time_entry_display [INFERRED 0.75]
 
-## Communities (108 total, 46 thin omitted)
+## Communities (113 total, 48 thin omitted)
 
 ### Community 0 - "Work Package Picker"
 Cohesion: 0.07
 Nodes (38): WorkPackage, toItem(), useWorkPackagePicker(), UseWorkPackagePickerOptions, WorkPackage, WorkPackageItem, PENDING_ACTION_PROMPTS, PendingAction (+30 more)
 
 ### Community 1 - "App Shell & Calendar Header"
-Cohesion: 0.04
-Nodes (34): Gate, ui, {
-  monthName,
-  yearLabel,
-  totalHoursLabel,
-  prevMonth,
-  nextMonth,
-  goToToday
-}, ui, { disconnecting, disconnectError, disconnect }, emit, open, {
-  state,
-  formSchema,
-  apiKeyPlaceholder,
-  hasStoredApiKey,
-  testing,
-  saving,
-  testResult,
-  testResultVisible,
-  saveError,
-  load,
-  onTestConnection,
-  onSave,
-  reset
-} (+26 more)
+Cohesion: 0.09
+Nodes (14): fabVisible, Gate, ui, created, creator, drawerOpen, isDiscardOpen, open (+6 more)
 
 ### Community 2 - "Test Connection & WP Fields"
-Cohesion: 0.06
-Nodes (33): registerTestConnectionIpcHandler(), TestConnectionInput, TestConnectionResult, dateField, dateRange, descriptionToolbar, draft, isEditingExistingLink (+25 more)
+Cohesion: 0.04
+Nodes (37): emit, props, statusClass, statusMessage, WorkPackageCreator, description, emit, props (+29 more)
 
 ### Community 3 - "Day Entries Modal"
 Cohesion: 0.05
 Nodes (41): askDelete(), cancelDateChange(), cancelDelete(), canMove(), changingDateId, confirmDateChange(), confirmDelete(), confirmingDeleteId (+33 more)
 
 ### Community 4 - "Time Entry & Calendar Aggregation"
-Cohesion: 0.10
-Nodes (25): TimeEntry, aggregateTimeEntriesByDay(), DayAggregate, MonthAggregate, safeParseHours(), canChangeDate(), timeEntryCommentText(), TimeEntryDraft (+17 more)
+Cohesion: 0.14
+Nodes (10): CreateTimeEntryInput, TimeEntry, UpdateTimeEntryInput, TimeEntryListQuery, timeEntryQueries, useMonthTimeEntries, aggregateTimeEntriesByDay(), DayAggregate (+2 more)
 
 ### Community 5 - "Work Package Detail Panel"
-Cohesion: 0.10
-Nodes (35): Principal, description, emit, props, statusClass, statusMessage, WorkPackageEditor, AssigneeOption (+27 more)
+Cohesion: 0.07
+Nodes (47): canChangeDate(), timeEntryCommentText(), TimeEntryDraft, timeEntryHours(), timeEntryWorkPackageNumber(), toDateChangeInput(), toTimeEntryDraft(), formatSpentHours() (+39 more)
 
 ### Community 6 - "OpenProject HTTP Client"
-Cohesion: 0.09
-Nodes (39): OpenProjectFilter, AllowedValue, AllowedValueSchema, AvailableAssigneesInputSchema, buildWorkPackageCreatePayload(), buildWorkPackagePatchPayload(), CalendarDateSchema, CreateWorkPackageInputSchema (+31 more)
+Cohesion: 0.08
+Nodes (36): AllowedValue, AllowedValueSchema, AvailableAssigneesInputSchema, buildWorkPackageCreatePayload(), buildWorkPackagePatchPayload(), CalendarDateSchema, CreateWorkPackageInputSchema, descriptionPayload() (+28 more)
 
 ### Community 7 - "Root tsconfig"
 Cohesion: 0.05
@@ -216,8 +200,8 @@ Cohesion: 0.06
 Nodes (35): src/main/**/*.ts, src/preload/**/*.ts, src/renderer/src/composables/**/*.ts, src/renderer/src/utils/**/*.ts, src/shared/**/*.ts, tests/fixtures/**, tests/support/**/*.ts, tests/**/*.test.ts (+27 more)
 
 ### Community 9 - "IPC Handlers & Bridge Types"
-Cohesion: 0.16
-Nodes (24): requireCredentials(), TimeEntryFilters, WorkPackageFilters, CreateTimeEntryInput, DeleteTimeEntryInput, TimeEntryActivity, TimeEntryLinks, UpdateTimeEntryInput (+16 more)
+Cohesion: 0.15
+Nodes (19): TimeEntryFilters, WorkPackageFilters, DeleteTimeEntryInput, TimeEntryActivity, TimeEntryLinks, AvailableAssigneesInput, CreateWorkPackageInput, UpdateWorkPackageInput (+11 more)
 
 ### Community 10 - "Package Manifest"
 Cohesion: 0.06
@@ -228,8 +212,8 @@ Cohesion: 0.07
 Nodes (29): auto-imports.d.ts, components.d.ts, src/preload/types.ts, src/renderer/**/*.vue, @vue/tsconfig/tsconfig.dom.json, compilerOptions, baseUrl, composite (+21 more)
 
 ### Community 12 - "IPC Handler Wrappers"
-Cohesion: 0.14
-Nodes (14): registerOpenProjectIpcHandlers(), buildRequestUrl(), buildTimeEntryPayload(), clampPageSize(), encodeTimeEntryFilters(), encodeTimeEntryParams(), encodeWorkPackageParams(), extractApiErrorMessage() (+6 more)
+Cohesion: 0.13
+Nodes (16): registerOpenProjectIpcHandlers(), requireCredentials(), buildRequestUrl(), buildTimeEntryPayload(), clampPageSize(), encodeTimeEntryFilters(), encodeTimeEntryParams(), encodeWorkPackageParams() (+8 more)
 
 ### Community 13 - "Time Entry Form"
 Cohesion: 0.08
@@ -249,8 +233,8 @@ Cohesion: 0.09
 Nodes (23): electron.vite.config.ts, vitest.config.ts, compilerOptions, baseUrl, composite, lib, paths, tsBuildInfoFile (+15 more)
 
 ### Community 16 - "Main Entry & Credentials"
-Cohesion: 0.15
-Nodes (11): electron, registerCredentialIpcHandlers(), toIpcError(), IpcError, toIpcError(), buildWorkPackageWebUrl(), OpenWorkPackageInputSchema, registerShellIpcHandlers() (+3 more)
+Cohesion: 0.07
+Nodes (27): electron, registerCredentialIpcHandlers(), toIpcError(), IpcError, toIpcError(), buildWorkPackageWebUrl(), OpenWorkPackageInputSchema, registerShellIpcHandlers() (+19 more)
 
 ### Community 17 - "Bigin Guards Plugin"
 Cohesion: 0.17
@@ -261,8 +245,8 @@ Cohesion: 0.10
 Nodes (10): OpenProjectAuthError, OpenProjectConflictError, OpenProjectError, OpenProjectHttpError, OpenProjectInvalidInputError, OpenProjectNotFoundError, OpenProjectSchemaError, OpenProjectServerError (+2 more)
 
 ### Community 19 - "Preload Bridge Surface"
-Cohesion: 0.09
-Nodes (5): PrincipalCollection, StatusCollection, WorkPackageCreateForm, OpenProjectBridge, principalQueries
+Cohesion: 0.13
+Nodes (3): StatusCollection, WorkPackageCollection, OpenProjectBridge
 
 ### Community 20 - "Icon Builder Tool"
 Cohesion: 0.13
@@ -274,15 +258,15 @@ Nodes (18): Contract Checklist (IPC types.ts sync, Zod schema first, breaking IP
 
 ### Community 22 - "Status & WP Create"
 Cohesion: 0.12
-Nodes (11): Status, WorkPackageCollection, WorkPackageForm, StatusListQuery, statusQueries, useStatusResolution(), SEARCH_SORT, usePrimaryStatusIds() (+3 more)
+Nodes (12): Status, WorkPackageCreateForm, WorkPackageCreateFormInput, OpenWorkPackageInBrowserInput, StatusListQuery, statusQueries, useStatusResolution(), SEARCH_SORT (+4 more)
 
 ### Community 23 - "Time Entry Schemas"
 Cohesion: 0.18
 Nodes (10): Citations, Credential read-back, Drift gate, Identity, IPC Contract, Read vs write surface, Rules, Shell surface (+2 more)
 
 ### Community 24 - "IPC Integration Tests"
-Cohesion: 0.06
-Nodes (25): HalLinkSchema, PrincipalCollectionSchema, PrincipalSchema, HalLinkSchema, ProjectCollectionSchema, ProjectSchema, StatusCollectionSchema, StatusSchema (+17 more)
+Cohesion: 0.08
+Nodes (8): HalLinkSchema, ProjectCollectionSchema, ProjectSchema, StatusCollectionSchema, StatusSchema, electron, fixture, StatusFixture
 
 ### Community 25 - "WP Creator Composable Tests"
 Cohesion: 0.19
@@ -397,8 +381,8 @@ Cohesion: 0.29
 Nodes (6): Architecture Rules, Dependency Direction, Domain Boundaries, Electron Layers & Boundaries, [Electron] Security Boundary (replaces the Nuxt BFF Boundary), IPC Contract (replaces the Nuxt BFF contract)
 
 ### Community 101 - "time-entries.ts"
-Cohesion: 0.29
-Nodes (3): TimeEntryListQuery, timeEntryQueries, useMonthTimeEntries
+Cohesion: 0.27
+Nodes (6): HalLinkSchema, Principal, PrincipalCollection, PrincipalCollectionSchema, PrincipalSchema, principalQueries
 
 ### Community 102 - "Knowledge Bundle Rules"
 Cohesion: 0.33
@@ -413,32 +397,66 @@ Cohesion: 0.40
 Nodes (4): AI Task Guide, Scope discipline, What it does, so you know what you're approving, Why `PLAN.md` matters to you
 
 ### Community 105 - "TimeEntryActivityCollection"
-Cohesion: 0.40
-Nodes (3): TimeEntryActivityCollection, TimeEntryActivityListQuery, timeEntryActivityQueries
+Cohesion: 0.15
+Nodes (19): OpenProjectFilter, CreateTimeEntryInputSchema, DeleteTimeEntryInputSchema, extractActivitiesFromForm(), HalLinkSchema, TimeEntryActivityCollection, TimeEntryActivityCollectionSchema, TimeEntryActivitySchema (+11 more)
+
+### Community 108 - "Current State"
+Cohesion: 0.22
+Nodes (8): Context Notes, Current State, Decisions Made, Next Steps, Session Handoff, Tasks, Uncommitted Changes, What We Were Working On
+
+### Community 109 - "CalendarView.vue"
+Cohesion: 0.22
+Nodes (6): bridgeError, grid, todayYmd, ui, weekdayLabels, {
+  year,
+  month,
+  aggregate,
+  isInitialLoading,
+  error,
+  isLoading,
+  refresh
+}
+
+### Community 110 - "SettingsModal.vue"
+Cohesion: 0.33
+Nodes (5): { disconnecting, disconnectError, disconnect }, emit, open, {
+  state,
+  formSchema,
+  apiKeyPlaceholder,
+  hasStoredApiKey,
+  testing,
+  saving,
+  testResult,
+  testResultVisible,
+  saveError,
+  load,
+  onTestConnection,
+  onSave,
+  reset
+}, toast
 
 ## Ambiguous Edges - Review These
 - `Renderer hardening (contextIsolation/nodeIntegration/sandbox)` → `CI quality job (lint/build/typecheck/test/knowledge validate)`  [AMBIGUOUS]
   .github/workflows/ci.yml · relation: conceptually_related_to
 
 ## Knowledge Gaps
-- **455 isolated node(s):** `data`, `scrubbed`, `BLOCKED`, `data`, `scrubbed` (+450 more)
+- **470 isolated node(s):** `What We Were Working On`, `Tasks`, `Decisions Made`, `Uncommitted Changes`, `Next Steps` (+465 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **46 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **48 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
 - **What is the exact relationship between `Renderer hardening (contextIsolation/nodeIntegration/sandbox)` and `CI quality job (lint/build/typecheck/test/knowledge validate)`?**
   _Edge tagged AMBIGUOUS (relation: conceptually_related_to) - confidence is low._
-- **Why does `electron` connect `Main Entry & Credentials` to `IPC Handlers & Bridge Types`, `Package Manifest`, `Test Connection & WP Fields`?**
-  _High betweenness centrality (0.120) - this node is a cross-community bridge._
+- **Why does `electron` connect `Main Entry & Credentials` to `IPC Handlers & Bridge Types`, `Package Manifest`?**
+  _High betweenness centrality (0.109) - this node is a cross-community bridge._
 - **Why does `onlyBuiltDependencies` connect `Package Manifest` to `Main Entry & Credentials`?**
-  _High betweenness centrality (0.097) - this node is a cross-community bridge._
-- **What connects `data`, `scrubbed`, `BLOCKED` to the rest of the system?**
-  _455 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _High betweenness centrality (0.089) - this node is a cross-community bridge._
+- **What connects `What We Were Working On`, `Tasks`, `Decisions Made` to the rest of the system?**
+  _470 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `Work Package Picker` be split into smaller, more focused modules?**
-  _Cohesion score 0.07058001397624039 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.06688311688311688 - nodes in this community are weakly interconnected._
 - **Should `App Shell & Calendar Header` be split into smaller, more focused modules?**
-  _Cohesion score 0.041666666666666664 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.09090909090909091 - nodes in this community are weakly interconnected._
 - **Should `Test Connection & WP Fields` be split into smaller, more focused modules?**
-  _Cohesion score 0.05585106382978723 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.041666666666666664 - nodes in this community are weakly interconnected._
