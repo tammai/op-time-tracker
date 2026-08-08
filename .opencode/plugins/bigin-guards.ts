@@ -23,7 +23,7 @@
 // tmpfile (which existed only because Claude Code hooks are one-shot
 // subprocesses that can't share memory across invocations).
 
-import { execSync } from "node:child_process"
+import { execFileSync, execSync } from "node:child_process"
 
 import type { Plugin } from "@opencode-ai/plugin"
 
@@ -46,6 +46,32 @@ function checkBash(command: string): string | null {
     if (pattern.test(scrubbed)) return message
   }
   return null
+}
+
+// ---- commit-msg gate: Conventional Commits ---------------------------------
+
+// Delegates the verdict to .claude/guards/commit-msg-guard.mjs instead of
+// re-implementing the rule here. That script is already harness-neutral — the
+// git commit-msg hook runs it for every committer — and a second copy of the
+// type list and length cap is a second place for them to drift.
+function checkCommitMessage(directory: string, command: string): string | null {
+  if (!/\bgit\s+commit\b/.test(scrubQuoted(command))) return null
+  try {
+    execFileSync("node", [".claude/guards/commit-msg-guard.mjs"], {
+      cwd: directory,
+      input: JSON.stringify({ tool_input: { command } }),
+      stdio: ["pipe", "ignore", "pipe"],
+    })
+    return null
+  } catch (e) {
+    // Only exit 2 is a verdict. A missing script or missing node exits 1 (or
+    // throws ENOENT) and still writes to stderr, so keying on stderr alone
+    // would turn "guard unavailable" into "every commit blocked" with a module
+    // resolution error as the message. Never block on guard failure — the git
+    // commit-msg hook is the backstop that covers every committer anyway.
+    const err = e as { status?: number; stderr?: Buffer }
+    return err.status === 2 ? err.stderr?.toString().trim() || null : null
+  }
 }
 
 // ---- spec-gate: blocks non-trivial edits before PLAN.md is approved --------
@@ -192,6 +218,8 @@ export const BiginGuardsPlugin: Plugin = async ({ directory, $, client }) => {
         const command = (output.args as Record<string, unknown>).command as string | undefined
         const blockMessage = checkBash(command ?? "")
         if (blockMessage) throw new Error(blockMessage)
+        const commitMessage = checkCommitMessage(directory, command ?? "")
+        if (commitMessage) throw new Error(commitMessage)
         pendingBashCommands.set(input.callID, command ?? "")
       }
 
