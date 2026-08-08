@@ -27,6 +27,15 @@ Invariants specific to the write path:
 - Errors add two codes: `OPENPROJECT_INVALID_INPUT` (our own validation, pre-request) and `OPENPROJECT_VALIDATION_FAILED` (the 422). Update and delete also surface `OPENPROJECT_NOT_FOUND` for an entry that is gone or invisible to the configured key.
 - **`deleteTimeEntry` returns nothing** — OpenProject answers 204 with an empty body. It is irreversible; there is no server-side undo, so the UI confirms before calling it.
 
+## Work-package edit surface
+`getWorkPackageForm`, `listAvailableAssignees` and `updateWorkPackage` make the detail panel editable. Same numeric-ids-only trust model as the time-entry writes, with three things that are **not** true of them:
+
+- **`updateWorkPackage` is a partial update — the opposite of `updateTimeEntry`.** Only the changed fields are sent. An absent field is left alone by OpenProject; `null` (a date) or `{ href: null }` (the assignee) explicitly *clears* it. The two are not interchangeable, so the diff that decides which is which lives in one tested pure function (`src/renderer/src/utils/work-package-draft.ts`), not per-field in a template. Sending every field, as the time-entry path does, would rewrite data the user never opened.
+- **`lockVersion` makes every write conditional**, and it must be the version the user actually edited — not the one a background list refetch last delivered, or the write silently overwrites whoever got there first. A stale one answers HTTP 409 → the new `OPENPROJECT_CONFLICT` code, which the renderer handles by refetching and discarding rather than retrying. (Before this, 409 fell through to the generic `OPENPROJECT_HTTP_ERROR` and could not be branched on.)
+- **`getWorkPackageForm` is a POST that reads.** Its body is built in the main process and holds exactly the validated `lockVersion`; nothing renderer-supplied is forwarded, which is what stops it being a write primitive. It returns a **flattened, non-HAL** shape — `{ writable, allowedValues: { id, name }[] }` per field — so the renderer never handles an href or an `_embedded` block.
+
+`listAvailableAssignees` takes a **`projectId`**, not a work package id. See [OpenProject Response Shapes](/domains/openproject-response-shapes.md#the-work-package-form-endpoint) for why.
+
 ## Shell surface
 `openWorkPackageInBrowser({ workPackageId })` is the one channel that hands a URL to the **operating system** rather than to OpenProject. It is on a separate `op:shell:*` channel prefix, handled by `src/main/ipc/shell.ts`, and makes no HTTP request at all.
 

@@ -70,6 +70,43 @@ id. Three consequences, each of which has already bitten:
 loads the others — deliberate, but the first thing to revisit if users report a
 work package they can't find. Merge the sources; don't drop the local pass.
 
+## The work-package form endpoint
+
+Two things the API docs imply but a real instance contradicts. Both were found
+by probing `op.bigin.vn` before any schema was written, and both changed the
+IPC signatures.
+
+- **`POST /work_packages/{id}/form` requires `lockVersion` in the payload.** An
+  empty `{}` body answers **HTTP 409**
+  (`urn:openproject-org:api:v3:errors:UpdateConflict`), not 200 — so the usual
+  "post an empty payload to read the schema" trick does not work here (it does
+  for `time_entries/form`, which is why the two look different). The body is
+  therefore exactly `{ lockVersion }` and nothing else, which keeps the security
+  property intact: no renderer content is forwarded, so a read cannot become a
+  write. Useful side effect — the query keys on the lock version, so a save
+  rekeys it and a stale version surfaces as a conflict before the user types.
+- **`GET /work_packages/{id}/available_assignees` does not exist — HTTP 404.**
+  The assignee options are a **project** resource. The form's
+  `assignee._links.allowedValues` is a single `{ href }` *object* (not an array,
+  unlike `status`/`type`/`priority`) pointing at
+  `/api/v3/projects/{projectId}/available_assignees`. So the renderer reads the
+  project id off the work package's own `_links.project.href` and sends the
+  number; that href is never followed, per the `shell.ts` rule of rebuilding
+  every path in main. It also lets the form and assignee requests run in
+  parallel, so one failing leaves the other's select working.
+
+Also confirmed: `status`/`type`/`priority` each carry **both**
+`_embedded.allowedValues` (full resources) and `_links.allowedValues`
+(`{ href, title }[]`) — the same two-form pattern `extractActivitiesFromForm`
+already handles. Every schema property carries `writable`, which is how a
+work package scheduled automatically from its children reports that its dates
+are derived and cannot be written. `subject` reports `maxLength: 255`; that
+number is **hardcoded** in the input schema rather than read from the response,
+because a server-reported limit cannot be a security boundary. Assignees may be
+`Group` or `PlaceholderUser`, so the schema accepts any `_type` — but the editor
+offers users only, since the PATCH builds `/api/v3/users/{id}` from a bare
+number and cannot express a group href.
+
 ## Diagnosing the next one
 
 `parseWithSchema` logs the failing field path, the Zod issue code, and the

@@ -38,6 +38,36 @@ import WorkPackageDetailPanel from './WorkPackageDetailPanel.vue'
 /** Two-way `v-model:open` so the parent owns visibility. */
 const open = defineModel<boolean>('open', { required: true })
 
+/**
+ * What `UModal` binds to — a gate in front of the real model, not a second
+ * source of truth.
+ *
+ * Every way out of the modal (the close button, Escape, a click outside) ends
+ * in one `update:open` of `false`, so refusing it in one setter covers all
+ * three with no flicker: `:open` is controlled, so declining to write leaves
+ * the dialog exactly where it is while the confirm appears. Watching `open`
+ * and re-opening after the fact would show the modal closing and snapping back.
+ */
+const modalOpen = computed({
+  get: () => open.value,
+  set: (value: boolean) => {
+    if (value) {
+      open.value = true
+      return
+    }
+    if (requestClose()) open.value = false
+  }
+})
+
+/**
+ * The user chose to lose the edits. Selecting the pending row is the
+ * composable's job; finishing a close is this component's, since it owns the
+ * visibility model.
+ */
+function onDiscardPending(): void {
+  if (discardPendingAction() === 'close') open.value = false
+}
+
 const {
   workPackages,
   isStatusFilterDegraded,
@@ -56,6 +86,11 @@ const {
   resetSearch,
   selectedWorkPackage,
   select,
+  editor,
+  pendingAction,
+  requestClose,
+  discardPendingAction,
+  keepEditing,
   openInBrowser,
   openingId
 } = useWorkPackagesBrowser()
@@ -122,7 +157,7 @@ const truncationNotice = computed(
 
 <template>
   <UModal
-    v-model:open="open"
+    v-model:open="modalOpen"
     fullscreen
     title="Work packages"
     description="Browse your work packages and open one in OpenProject."
@@ -305,12 +340,22 @@ const truncationNotice = computed(
            with it for attention every time the modal opens. The `v-if` also
            means the panel never has to cope with a null work package — which is
            what lets stage 2 bind a form straight to a non-null prop. -->
-      <div class="min-h-0 min-w-0 flex-1">
+      <!-- The unsaved-changes confirm is the panel's own actions bar, not a
+           second strip beneath it: switching rows and closing the screen are
+           the same question to the user, and it is answered in the one place
+           the panel's other decisions are. An inline bar rather than a nested
+           dialog, matching how the day modal confirms a delete — a modal on top
+           of a modal buries the thing it is asking about. -->
+      <div class="flex min-h-0 min-w-0 flex-1 flex-col">
         <WorkPackageDetailPanel
           v-if="selectedWorkPackage"
           :work-package="selectedWorkPackage"
           :opening="openingId === selectedWorkPackage.id"
+          :editor="editor"
+          :pending-action="pendingAction"
           @open-in-browser="onOpenInBrowser"
+          @keep-editing="keepEditing()"
+          @discard-pending="onDiscardPending()"
         />
       </div>
     </template>

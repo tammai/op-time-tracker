@@ -1,0 +1,314 @@
+<script setup lang="ts">
+import { computed, useId, type WritableComputedRef } from 'vue'
+import { parseDate, type DateValue } from '@internationalized/date'
+
+import { isCalendarDate } from '@shared/validation/calendar-date'
+import type {
+  EditableFieldState,
+  WorkPackageFieldName
+} from '@renderer/composables/useWorkPackageEditor'
+import type {
+  AssigneeOption,
+  FieldOption,
+  WorkPackageDraft
+} from '@renderer/utils/work-package-draft'
+
+/**
+ * The editable field set of a work package.
+ *
+ * Its own component, and taking **data only** — a draft, four option lists, and
+ * a per-field enabled/disabled verdict. It knows nothing about the work package
+ * it came from, the form endpoint, saving, or HAL. That is what makes it
+ * reusable rather than merely extracted: stage 3's create form mounts this same
+ * component against `emptyWorkPackageDraft()` and options from the *create*
+ * form endpoint, with no branch in here and no second copy of the layout.
+ *
+ * The grid deliberately mirrors the read view's description list — same two
+ * columns, same rhythm — so entering edit mode doesn't reflow the panel under
+ * the user's eyes.
+ *
+ * A disabled field carries its reason inline. That is the one piece of helper
+ * text worth showing: a greyed-out control with no explanation reads as a bug,
+ * and these reasons report real facts about the instance (a workflow with no
+ * onward transition, a date derived from child work packages, a request that
+ * failed).
+ */
+
+const draft = defineModel<WorkPackageDraft>('draft', { required: true })
+
+const props = defineProps<{
+  fields: Record<WorkPackageFieldName, EditableFieldState>
+  statusOptions: FieldOption[]
+  typeOptions: FieldOption[]
+  priorityOptions: FieldOption[]
+  assigneeOptions: AssigneeOption[]
+  /**
+   * The work package's project, shown but not editable.
+   *
+   * Read-only because OpenProject's work-package form doesn't offer `project`
+   * at all — there are no allowed values to populate a select with, and moving
+   * a work package between projects re-derives which types, statuses and
+   * assignees are legal. It is here because the field belongs in this layout,
+   * not because it is half-implemented.
+   */
+  projectLabel?: string
+  /** True while a save is in flight — everything locks, nothing is lost. */
+  busy?: boolean
+}>()
+
+// Unique per instance, so a second mount (stage 3's create form beside this
+// one) can't produce duplicate ids and steal the labels.
+const uid = useId()
+// `project` isn't a `WorkPackageFieldName` — it has no draft entry and no
+// editable state, only a label and an id to tie that label to.
+const fieldId = (name: WorkPackageFieldName | 'project'): string => `${uid}-${name}`
+
+/**
+ * `null` ↔ `undefined` for the three required selects.
+ *
+ * The draft says `null` for "we don't know this value" — a work package whose
+ * status href was unreadable — because that is what the diff has to recognise
+ * to know not to send it. `USelectMenu` derives its model type from its items,
+ * whose `value` is a plain number, so it speaks `undefined` for "nothing
+ * selected". One adapter per field keeps that presentational difference out of
+ * the draft, where it would change what a save means.
+ *
+ * The assignee select needs no adapter: `null` is a real option there
+ * ("Unassigned"), so it is in the item values and types through directly.
+ */
+function optionalId(
+  key: 'statusId' | 'typeId' | 'priorityId'
+): WritableComputedRef<number | undefined> {
+  return computed({
+    get: () => draft.value[key] ?? undefined,
+    set: (value) => {
+      draft.value[key] = value ?? null
+    }
+  })
+}
+
+const typeId = optionalId('typeId')
+const statusId = optionalId('statusId')
+const priorityId = optionalId('priorityId')
+
+/**
+ * Start and due date are **one** control — a range.
+ *
+ * They are one idea to the user ("when is this work package happening") and
+ * OpenProject treats them as a pair, so two independent inputs invited the
+ * nonsense state of a due date before its start. The draft still holds two
+ * `YYYY-MM-DD` strings, because that is what the diff and the PATCH body speak;
+ * only the presentation is unified, exactly as `DayEntriesModal` keeps
+ * `spentOn` a string and converts at the calendar's edge.
+ *
+ * `parseDate` throws on a malformed string, hence the guard: a work package
+ * whose stored date is unreadable opens the picker on no selection rather than
+ * taking the panel down with it.
+ */
+const dateRange = computed<{
+  start: DateValue | undefined
+  end: DateValue | undefined
+}>({
+  get: () => ({
+    start: isCalendarDate(draft.value.startDate)
+      ? parseDate(draft.value.startDate)
+      : undefined,
+    end: isCalendarDate(draft.value.dueDate)
+      ? parseDate(draft.value.dueDate)
+      : undefined
+  }),
+  set: (value) => {
+    draft.value.startDate = value?.start?.toString() ?? ''
+    draft.value.dueDate = value?.end?.toString() ?? ''
+  }
+})
+
+/** Both halves come from one control, so one verdict governs it. */
+const dateField = computed<EditableFieldState>(() => {
+  const start = props.fields.startDate
+  const end = props.fields.dueDate
+  if (start.disabled || end.disabled) {
+    return { disabled: true, reason: start.reason ?? end.reason }
+  }
+  return { disabled: false, reason: null }
+})
+
+function clearDates(): void {
+  draft.value.startDate = ''
+  draft.value.dueDate = ''
+}
+</script>
+
+<template>
+  <!-- Four columns, label above its control. The four enumerated fields sit on
+       one line in workflow order — status and assignee are what actually change
+       day to day, type and priority rarely. Dates take half the row below them,
+       and the subject goes last: it is the field least often edited and the one
+       that needs the most width.
+
+       `items-start` because a field carrying a reason is taller than its
+       neighbours and they should top-align rather than centre. -->
+  <div class="grid grid-cols-4 items-start gap-x-4 gap-y-4 text-sm">
+    <!-- Project is shown, not edited — see the `projectLabel` prop. A disabled
+         input rather than plain text so the row keeps its rhythm, and the label
+         carries the reason so a greyed control doesn't read as a bug without
+         costing a line of helper text under the field. -->
+    <div class="col-span-2 flex min-w-0 flex-col gap-1">
+      <label class="text-muted" :for="fieldId('project')">
+        Project (Edit isn’t supported)
+      </label>
+      <UInput
+        :id="fieldId('project')"
+        :model-value="props.projectLabel ?? ''"
+        class="w-full"
+        disabled
+      />
+    </div>
+
+    <div class="flex min-w-0 flex-col gap-1">
+      <label class="text-muted" :for="fieldId('type')">Type</label>
+      <!-- `search-input: false` on the short lists: a search box above four
+           workflow values is chrome that costs a keystroke and saves none. The
+           assignee select keeps its search, where a project's membership can
+           run to dozens. -->
+      <USelectMenu
+        :id="fieldId('type')"
+        v-model="typeId"
+        :items="props.typeOptions"
+        value-key="value"
+        :search-input="false"
+        :disabled="props.busy || props.fields.type.disabled"
+        placeholder="—"
+        class="w-full"
+      />
+      <p v-if="props.fields.type.reason" class="text-muted text-xs">
+        {{ props.fields.type.reason }}
+      </p>
+    </div>
+
+    <div class="flex min-w-0 flex-col gap-1">
+      <label class="text-muted" :for="fieldId('priority')">Priority</label>
+      <USelectMenu
+        :id="fieldId('priority')"
+        v-model="priorityId"
+        :items="props.priorityOptions"
+        value-key="value"
+        :search-input="false"
+        :disabled="props.busy || props.fields.priority.disabled"
+        placeholder="—"
+        class="w-full"
+      />
+      <p v-if="props.fields.priority.reason" class="text-muted text-xs">
+        {{ props.fields.priority.reason }}
+      </p>
+    </div>
+
+    <div class="flex min-w-0 flex-col gap-1">
+      <label class="text-muted" :for="fieldId('assignee')">Assignee</label>
+      <!-- The list leads with "Unassigned", so clearing is a pick rather than a
+           hidden gesture — and the placeholder says the same thing, since a
+           null model renders as unset either way. -->
+      <USelectMenu
+        :id="fieldId('assignee')"
+        v-model="draft.assigneeId"
+        :items="props.assigneeOptions"
+        value-key="value"
+        :disabled="props.busy || props.fields.assignee.disabled"
+        placeholder="Unassigned"
+        class="w-full"
+      />
+      <p v-if="props.fields.assignee.reason" class="text-muted text-xs">
+        {{ props.fields.assignee.reason }}
+      </p>
+    </div>
+
+    <div class="flex min-w-0 flex-col gap-1">
+      <label class="text-muted" :for="fieldId('status')">Status</label>
+      <USelectMenu
+        :id="fieldId('status')"
+        v-model="statusId"
+        :items="props.statusOptions"
+        value-key="value"
+        :search-input="false"
+        :disabled="props.busy || props.fields.status.disabled"
+        placeholder="—"
+        class="w-full"
+      />
+      <p v-if="props.fields.status.reason" class="text-muted text-xs">
+        {{ props.fields.status.reason }}
+      </p>
+    </div>
+
+    <!-- One control for both dates: they are one decision to the user, and
+         OpenProject treats them as a pair. `UInputDate` in range mode is a
+         segmented text field — it types dates, it does not pick them, so the
+         calendar is a separate popover bound to the same model. The whole field
+         is that popover's trigger.
+
+         `justify-center` lands on the field's own `base` slot (an
+         `inline-flex`), so the segments sit centred rather than hugging the
+         start edge. The trailing padding is unconditional: reserving the clear
+         button's space keeps the segments from shifting the moment a date is
+         set.
+
+         Clearing has to stay reachable: neither control offers a gesture for
+         unsetting a date, and "no dates" is a state OpenProject accepts —
+         losing it would break the cleared-versus-untouched distinction the
+         PATCH depends on. -->
+    <div class="col-span-2 flex min-w-0 flex-col gap-1">
+      <label class="text-muted" :for="fieldId('startDate')">
+        Start Date → Due Date
+      </label>
+      <UPopover :disabled="props.busy || dateField.disabled">
+        <!-- No separate calendar button and no leading icon: the whole field
+             opens the grid, and the label above already says what it is. -->
+        <UInputDate
+          :id="fieldId('startDate')"
+          v-model="dateRange"
+          range
+          class="w-full justify-center pe-8"
+          :disabled="props.busy || dateField.disabled"
+        >
+          <template #trailing>
+            <!-- `.stop`, or clearing would bubble to the trigger and open the
+                 calendar on its way out. -->
+            <UButton
+              v-if="draft.startDate || draft.dueDate"
+              color="neutral"
+              variant="link"
+              size="sm"
+              icon="i-lucide-x"
+              aria-label="Clear dates"
+              class="px-0"
+              :disabled="props.busy || dateField.disabled"
+              @click.stop="clearDates"
+            />
+          </template>
+        </UInputDate>
+
+        <template #content>
+          <UCalendar v-model="dateRange" class="p-2" :number-of-months="2" range />
+        </template>
+      </UPopover>
+      <p v-if="dateField.reason" class="text-muted text-xs">
+        {{ dateField.reason }}
+      </p>
+    </div>
+
+    <!-- Subject last and full width: the one free-text field, the one most
+         likely to be long, and the one already shown as the panel's heading —
+         so it needs the room but not the prominence. -->
+    <div class="col-span-4 flex min-w-0 flex-col gap-1">
+      <label class="text-muted" :for="fieldId('subject')">Subject</label>
+      <UInput
+        :id="fieldId('subject')"
+        v-model="draft.subject"
+        class="w-full"
+        :disabled="props.busy || props.fields.subject.disabled"
+      />
+      <p v-if="props.fields.subject.reason" class="text-muted text-xs">
+        {{ props.fields.subject.reason }}
+      </p>
+    </div>
+  </div>
+</template>

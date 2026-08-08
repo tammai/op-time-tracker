@@ -8,7 +8,10 @@ import {
   type TimeEntryFilters,
   type CreateTimeEntryInput,
   type UpdateTimeEntryInput,
-  type DeleteTimeEntryInput
+  type DeleteTimeEntryInput,
+  type WorkPackageFormInput,
+  type AvailableAssigneesInput,
+  type UpdateWorkPackageInput
 } from '../openproject/client'
 import {
   CredentialReadError,
@@ -113,6 +116,60 @@ export function registerOpenProjectIpcHandlers(): void {
         const creds = await requireCredentials()
         const client = new OpenProjectClient(creds)
         await client.deleteTimeEntry(input)
+      } catch (e) {
+        throw toIpcError(e)
+      }
+    }
+  )
+
+  /**
+   * The work-package edit channels (stage 2).
+   *
+   * Same contract as the time-entry writes above: `input` is renderer-supplied
+   * and therefore untrusted, so each client method Zod-validates it before a
+   * request exists. Two things are specific to this trio:
+   *
+   * - `get-work-package-form` is a POST that reads. Its body is built in the
+   *   client from one validated integer and carries nothing from here, so the
+   *   channel cannot be used to write (`.opencode/rules/security.md`).
+   * - `update-work-package` is a **partial** update: an absent field is left
+   *   alone, `null` clears. A stale `lockVersion` comes back as
+   *   `OPENPROJECT_CONFLICT`, which the renderer handles by refetching rather
+   *   than retrying.
+   */
+  ipcMain.handle(
+    'op:openproject:get-work-package-form',
+    async (_event, input: WorkPackageFormInput) => {
+      try {
+        const creds = await requireCredentials()
+        const client = new OpenProjectClient(creds)
+        return await client.getWorkPackageForm(input)
+      } catch (e) {
+        throw toIpcError(e)
+      }
+    }
+  )
+
+  ipcMain.handle(
+    'op:openproject:list-available-assignees',
+    async (_event, input: AvailableAssigneesInput) => {
+      try {
+        const creds = await requireCredentials()
+        const client = new OpenProjectClient(creds)
+        return await client.listAvailableAssignees(input)
+      } catch (e) {
+        throw toIpcError(e)
+      }
+    }
+  )
+
+  ipcMain.handle(
+    'op:openproject:update-work-package',
+    async (_event, input: UpdateWorkPackageInput) => {
+      try {
+        const creds = await requireCredentials()
+        const client = new OpenProjectClient(creds)
+        return await client.updateWorkPackage(input)
       } catch (e) {
         throw toIpcError(e)
       }

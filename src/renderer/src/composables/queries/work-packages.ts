@@ -2,13 +2,17 @@ import {
   defineQuery,
   defineQueryOptions,
   useMutation,
-  useQuery
+  useQuery,
+  useQueryCache
 } from '@pinia/colada'
 import { computed } from 'vue'
 import type {
   OpenWorkPackageInBrowserInput,
+  UpdateWorkPackageInput,
+  WorkPackage,
   WorkPackageCollection,
-  WorkPackageFilters
+  WorkPackageFilters,
+  WorkPackageForm
 } from '@opentracker/preload'
 
 import {
@@ -97,6 +101,22 @@ export const workPackageQueries = {
           sortBy: SEARCH_SORT
         }
       })
+  })),
+
+  /**
+   * The editable schema of one work package: which fields are writable, and
+   * which values the workflow allows for status, type and priority.
+   *
+   * **Keyed on the lock version as well as the id**, which is load-bearing
+   * rather than incidental. The form endpoint takes the lock version and 409s
+   * on a stale one, so a cached answer from before a save is not merely
+   * out-of-date — it is unusable. Including it in the key means a successful
+   * save rekeys the query and the new allowed values are fetched without
+   * anything having to invalidate them by hand.
+   */
+  form: defineQueryOptions((params: { workPackageId: number; lockVersion: number }) => ({
+    key: ['work-packages', 'form', params.workPackageId, params.lockVersion],
+    query: () => window.openproject.getWorkPackageForm(params)
   }))
 }
 
@@ -223,4 +243,47 @@ export function useOpenWorkPackageInBrowser() {
   })
 }
 
-export type { WorkPackageCollection, WorkPackageFilters }
+/**
+ * Update a work package.
+ *
+ * A **partial** update: the caller sends only what changed (see
+ * `utils/work-package-draft.ts`, where that diff is computed). Sending every
+ * field, as the time-entry update does, would rewrite data the user never
+ * opened.
+ *
+ * Invalidation lives here rather than in a component, per
+ * `.opencode/rules/conventions-frontend.md`. The whole `['work-packages']`
+ * prefix goes, which covers the browse list, any cached search, and the form —
+ * a save can change the subject a row renders, the status it sorts by, and
+ * which transitions are legal next.
+ *
+ * `onError` invalidates too, but only on a conflict. That is the one failure
+ * where our cached copy is provably wrong: the server rejected the write
+ * *because* somebody else already changed the work package, so refetching is
+ * what lets the editor re-seed from the real current state and discard the
+ * edits it can no longer safely apply. Every other error changed nothing on the
+ * server, so there is nothing stale to refetch.
+ */
+export function useUpdateWorkPackage() {
+  const cache = useQueryCache()
+  return useMutation<WorkPackage, UpdateWorkPackageInput>({
+    mutation: (input: UpdateWorkPackageInput) =>
+      window.openproject.updateWorkPackage(input),
+    onSuccess: () => {
+      cache.invalidateQueries({ key: ['work-packages'] })
+    },
+    onError: (error: unknown) => {
+      if ((error as { code?: string } | null)?.code === 'OPENPROJECT_CONFLICT') {
+        cache.invalidateQueries({ key: ['work-packages'] })
+      }
+    }
+  })
+}
+
+export type {
+  UpdateWorkPackageInput,
+  WorkPackage,
+  WorkPackageCollection,
+  WorkPackageFilters,
+  WorkPackageForm
+}

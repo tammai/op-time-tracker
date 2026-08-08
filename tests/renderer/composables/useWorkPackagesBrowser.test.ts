@@ -22,10 +22,12 @@ import {
  */
 
 /** A work package as the bridge returns it. */
-function wp(id: number, subject: string, status = 'In Progress') {
+function wp(id: number, subject: string, status = 'In Progress', lockVersion = 1) {
   return {
     id,
     _type: 'WorkPackage' as const,
+    // Required since stage 2: every save is conditional on it.
+    lockVersion,
     subject,
     _links: {
       self: { href: `/api/v3/work_packages/${id}` },
@@ -401,6 +403,161 @@ describe('useWorkPackagesBrowser — selection', () => {
     expect(browser.selectedWorkPackage.value?.subject).toBe(
       'Auth: fix login redirect (v2)'
     )
+  })
+})
+
+describe('useWorkPackagesBrowser — unsaved edits', () => {
+  /**
+   * Put the editor into the one state the whole state machine exists for: the
+   * user has typed something that is not on the server. Returns the browser so
+   * the caller can drive it.
+   */
+  async function withUnsavedEdits(): Promise<
+    ReturnType<typeof useWorkPackagesBrowser>
+  > {
+    const browser = mountBrowser()
+    await flush()
+    expect(browser.selectedWorkPackage.value?.id).toBe(101)
+
+    browser.editor.startEditing()
+    browser.editor.draft.value.subject = 'Auth: fix login redirect (edited)'
+    await flush()
+    expect(browser.editor.isDirty.value).toBe(true)
+    return browser
+  }
+
+  it('refuses to switch rows while edits are unsaved, and remembers the row that was wanted', async () => {
+    const browser = await withUnsavedEdits()
+
+    browser.select(MINE[1])
+    await flush()
+
+    // Blocked — the panel must still show the row being edited, or the typing
+    // is gone with no way back.
+    expect(browser.selectedWorkPackage.value?.id).toBe(101)
+    expect(browser.editor.draft.value.subject).toBe(
+      'Auth: fix login redirect (edited)'
+    )
+    // And the request is *held*, not dropped: answering "discard" has to know
+    // which row the user was heading for.
+    expect(browser.pendingAction.value).toEqual({
+      kind: 'select',
+      workPackage: MINE[1]
+    })
+  })
+
+  it('discarding really loses the edits and performs the held row switch', async () => {
+    const browser = await withUnsavedEdits()
+    browser.select(MINE[1])
+    await flush()
+
+    expect(browser.discardPendingAction()).toBe('select')
+    await flush()
+
+    // The pending action completed…
+    expect(browser.selectedWorkPackage.value?.id).toBe(102)
+    expect(browser.pendingAction.value).toBeNull()
+    // …and the edits are actually gone, not merely hidden: the draft now holds
+    // the newly selected row, and nothing is dirty.
+    expect(browser.editor.draft.value.subject).toBe('Billing: invoice PDF export')
+    expect(browser.editor.isDirty.value).toBe(false)
+    expect(browser.editor.isEditing.value).toBe(false)
+  })
+
+  it('keeping the edits preserves the draft and abandons the switch', async () => {
+    const browser = await withUnsavedEdits()
+    browser.select(MINE[1])
+    await flush()
+
+    browser.keepEditing()
+    await flush()
+
+    expect(browser.pendingAction.value).toBeNull()
+    // The whole point: the answer "no, keep editing" must cost nothing.
+    expect(browser.selectedWorkPackage.value?.id).toBe(101)
+    expect(browser.editor.draft.value.subject).toBe(
+      'Auth: fix login redirect (edited)'
+    )
+    expect(browser.editor.isDirty.value).toBe(true)
+    expect(browser.editor.isEditing.value).toBe(true)
+  })
+
+  it('switches rows immediately when the editor is clean', async () => {
+    const browser = mountBrowser()
+    await flush()
+
+    browser.select(MINE[1])
+    await flush()
+
+    // No confirm for a switch that loses nothing — asking would be noise.
+    expect(browser.pendingAction.value).toBeNull()
+    expect(browser.selectedWorkPackage.value?.id).toBe(102)
+  })
+
+  it('does not prompt when the row already open is re-selected', async () => {
+    const browser = await withUnsavedEdits()
+
+    browser.select(MINE[0])
+    await flush()
+
+    // Clicking the open row is not a switch, so there is nothing to lose.
+    expect(browser.pendingAction.value).toBeNull()
+    expect(browser.selectedWorkPackage.value?.id).toBe(101)
+    expect(browser.editor.isDirty.value).toBe(true)
+  })
+
+  it('lets the screen close when nothing is unsaved', async () => {
+    const browser = mountBrowser()
+    await flush()
+
+    expect(browser.requestClose()).toBe(true)
+    expect(browser.pendingAction.value).toBeNull()
+  })
+
+  it('withholds permission to close while edits are unsaved', async () => {
+    const browser = await withUnsavedEdits()
+
+    // `false` is what keeps the modal on screen — the same guard as the row
+    // switch, because to the user it is the same question.
+    expect(browser.requestClose()).toBe(false)
+    expect(browser.pendingAction.value).toEqual({ kind: 'close' })
+    expect(browser.editor.draft.value.subject).toBe(
+      'Auth: fix login redirect (edited)'
+    )
+  })
+
+  it('discarding a held close reports the kind so the caller can finish it', async () => {
+    const browser = await withUnsavedEdits()
+    expect(browser.requestClose()).toBe(false)
+
+    // The composable cannot close the modal itself — it says which action was
+    // released so the component can.
+    expect(browser.discardPendingAction()).toBe('close')
+    await flush()
+
+    expect(browser.pendingAction.value).toBeNull()
+    expect(browser.selectedWorkPackage.value?.id).toBe(101)
+    expect(browser.editor.draft.value.subject).toBe('Auth: fix login redirect')
+    expect(browser.editor.isDirty.value).toBe(false)
+  })
+
+  it('keeping the edits leaves a held close refusing again', async () => {
+    const browser = await withUnsavedEdits()
+    expect(browser.requestClose()).toBe(false)
+
+    browser.keepEditing()
+    expect(browser.pendingAction.value).toBeNull()
+    expect(browser.editor.isDirty.value).toBe(true)
+    // Still dirty → the next attempt must ask again rather than sail through.
+    expect(browser.requestClose()).toBe(false)
+  })
+
+  it('discarding with nothing pending is a no-op', async () => {
+    const browser = mountBrowser()
+    await flush()
+
+    expect(browser.discardPendingAction()).toBeNull()
+    expect(browser.selectedWorkPackage.value?.id).toBe(101)
   })
 })
 

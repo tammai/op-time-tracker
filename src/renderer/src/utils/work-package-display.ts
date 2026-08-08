@@ -205,6 +205,10 @@ export function workPackageStatusColorClass(wp: WorkPackage): string {
   return STATUS_COLORS.get(title.toLowerCase()) ?? STATUS_COLOR_DEFAULT
 }
 
+export function workPackagePriorityLabel(wp: WorkPackage): string {
+  return wp._links.priority?.title || EM_DASH
+}
+
 export function workPackageProjectLabel(wp: WorkPackage): string {
   return wp._links.project?.title || EM_DASH
 }

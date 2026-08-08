@@ -37,7 +37,11 @@ import {
 } from '~~/src/main/credentials'
 import { OpenProjectError } from '~~/src/main/openproject/client'
 
-import { WorkPackageCollectionSchema } from '~~/src/main/schemas/work-packages'
+import {
+  WorkPackageCollectionSchema,
+  WorkPackageSchema
+} from '~~/src/main/schemas/work-packages'
+import { PrincipalCollectionSchema } from '~~/src/main/schemas/principals'
 import {
   TimeEntryCollectionSchema,
   TimeEntrySchema,
@@ -48,6 +52,8 @@ import { StatusCollectionSchema } from '~~/src/main/schemas/statuses'
 import workPackagesFixture from '~~/tests/fixtures/work-packages-collection.json'
 import timeEntriesFixture from '~~/tests/fixtures/time-entries-collection.json'
 import statusesFixture from '~~/tests/fixtures/statuses-collection.json'
+import workPackageFormFixture from '~~/tests/fixtures/work-package-form.json'
+import assigneesFixture from '~~/tests/fixtures/available-assignees-collection.json'
 
 const BASE_URL = 'https://openproject.example.com'
 // A throwaway test API key. Asserted present in the Authorization header,
@@ -654,6 +660,337 @@ describe('happy path — delete time entry', () => {
 
   it('rejects with CREDENTIAL_NOT_CONFIGURED when nothing is stored', async () => {
     const err = await expectIpcError(() => deleteTimeEntry({ id: 100 }))
+    expect(err.code).toBe('CREDENTIAL_NOT_CONFIGURED')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Work-package editing channels (stage 2)
+//
+// Same integration shape as the time-entry writes above: the real handler, the
+// real credential store, the real client and the real schemas, with only
+// `fetch` / `safeStorage` / `ipcMain` stubbed. What these cover that the client
+// unit tests cannot is the wiring — that the channel exists, reads credentials
+// before anything else, and normalizes every failure through `toIpcError()` so
+// no credential detail or raw server body reaches the renderer.
+// ---------------------------------------------------------------------------
+
+/** Helper: invoke the work-package form handler. */
+function getWorkPackageForm(input: unknown): Promise<unknown> {
+  return electron.invoke('op:openproject:get-work-package-form', input)
+}
+
+/** Helper: invoke the available-assignees handler. */
+function listAvailableAssignees(input: unknown): Promise<unknown> {
+  return electron.invoke('op:openproject:list-available-assignees', input)
+}
+
+/** Helper: invoke the update-work-package handler. */
+function updateWorkPackage(input: unknown): Promise<unknown> {
+  return electron.invoke('op:openproject:update-work-package', input)
+}
+
+describe('happy path — work package form', () => {
+  const validInput = { workPackageId: 34922, lockVersion: 5 }
+
+  it('POSTs the form endpoint with auth and returns the flattened allowed values', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    fetchMock.mockResolvedValueOnce(jsonOk(workPackageFormFixture))
+
+    const result = (await getWorkPackageForm(validInput)) as {
+      status: { writable: boolean; allowedValues: Array<{ id: number; name: string }> }
+      subject: { writable: boolean }
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+    expect(url.href).toBe(`${BASE_URL}/api/v3/work_packages/34922/form`)
+    expect(init.method).toBe('POST')
+    const headers = init.headers as Record<string, string>
+    expect(headers.Authorization).toBe(EXPECTED_AUTH)
+
+    // The renderer receives `{ id, name }` lists — the HAL never crosses IPC.
+    expect(result.status.allowedValues).toEqual([
+      { id: 1, name: 'To Do' },
+      { id: 21, name: 'Ready for UAT' },
+      { id: 26, name: 'QA Completed' }
+    ])
+    expect(result.subject.writable).toBe(true)
+    expect(JSON.stringify(result)).not.toContain('href')
+  })
+
+  it('forwards nothing but the lock version — the POST is never a write primitive', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    fetchMock.mockResolvedValueOnce(jsonOk(workPackageFormFixture))
+
+    // Extra keys a hostile renderer might append to the IPC payload. If any of
+    // them reached the body, this read channel would become a write.
+    await getWorkPackageForm({
+      ...validInput,
+      subject: 'pwned',
+      _links: { status: { href: '/api/v3/statuses/9' } }
+    })
+
+    const [, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+    expect(JSON.parse(init.body as string)).toEqual({ lockVersion: 5 })
+  })
+
+  it('rejects a renderer-supplied path in place of the numeric id, without calling fetch', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+
+    for (const workPackageId of ['34922/../../users', '../admin', 0, -1, 1.5]) {
+      const err = await expectIpcError(() =>
+        getWorkPackageForm({ ...validInput, workPackageId })
+      )
+      expect(err.code).toBe('OPENPROJECT_INVALID_INPUT')
+    }
+    for (const lockVersion of [-1, 1.5, '5', null, undefined]) {
+      const err = await expectIpcError(() =>
+        getWorkPackageForm({ ...validInput, lockVersion })
+      )
+      expect(err.code).toBe('OPENPROJECT_INVALID_INPUT')
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a 409 as OPENPROJECT_CONFLICT — a stale lock version', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          _type: 'Error',
+          errorIdentifier: 'urn:openproject-org:api:v3:errors:UpdateConflict',
+          message: 'Could not update the resource because of conflicting modifications.'
+        }),
+        { status: 409, headers: { 'content-type': 'application/json' } }
+      )
+    )
+
+    // The renderer branches on this code to refetch rather than retry, so it
+    // must survive `toIpcError()` intact instead of flattening to a generic
+    // HTTP failure.
+    const err = await expectIpcError(() => getWorkPackageForm(validInput))
+    expect(err.code).toBe('OPENPROJECT_CONFLICT')
+  })
+
+  it('surfaces a 500 without leaking the response body or the key', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    fetchMock.mockResolvedValueOnce(
+      new Response('internal stack trace with ' + API_KEY, { status: 500 })
+    )
+
+    const err = await expectIpcError(() => getWorkPackageForm(validInput))
+    expect(err.code).toBe('OPENPROJECT_SERVER_ERROR')
+    expect(err.message).not.toContain('stack trace')
+  })
+
+  it('rejects with CREDENTIAL_NOT_CONFIGURED when nothing is stored', async () => {
+    const err = await expectIpcError(() => getWorkPackageForm(validInput))
+    expect(err.code).toBe('CREDENTIAL_NOT_CONFIGURED')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('happy path — available assignees', () => {
+  it('GETs the project-scoped endpoint with auth and returns the validated collection', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    fetchMock.mockResolvedValueOnce(jsonOk(assigneesFixture))
+
+    const result = await listAvailableAssignees({ projectId: 41 })
+    expect(result).toEqual(PrincipalCollectionSchema.parse(assigneesFixture))
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+    // A *project* resource — the work-package-scoped route answers 404.
+    expect(url.pathname).toBe('/api/v3/projects/41/available_assignees')
+    expect(init.method ?? 'GET').toBe('GET')
+    const headers = init.headers as Record<string, string>
+    expect(headers.Authorization).toBe(EXPECTED_AUTH)
+
+    // A group in the list must not fail the parse and empty the whole select.
+    const elements = (result as { _embedded: { elements: Array<{ _type: string }> } })
+      ._embedded.elements
+    expect(elements).toHaveLength(5)
+    expect(elements.some((p) => p._type === 'Group')).toBe(true)
+  })
+
+  it('rejects a renderer-supplied path in place of the numeric project id', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+
+    for (const projectId of ['41/../../users', 0, -1, 2.5, null, undefined]) {
+      const err = await expectIpcError(() => listAvailableAssignees({ projectId }))
+      expect(err.code).toBe('OPENPROJECT_INVALID_INPUT')
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a 404 as OPENPROJECT_NOT_FOUND — the project is gone or invisible', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    fetchMock.mockResolvedValueOnce(new Response('', { status: 404 }))
+
+    const err = await expectIpcError(() => listAvailableAssignees({ projectId: 41 }))
+    expect(err.code).toBe('OPENPROJECT_NOT_FOUND')
+  })
+
+  it('surfaces a 500 without leaking the response body or the key', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    fetchMock.mockResolvedValueOnce(
+      new Response('internal stack trace with ' + API_KEY, { status: 500 })
+    )
+
+    const err = await expectIpcError(() => listAvailableAssignees({ projectId: 41 }))
+    expect(err.code).toBe('OPENPROJECT_SERVER_ERROR')
+    expect(err.message).not.toContain('stack trace')
+  })
+
+  it('rejects with CREDENTIAL_NOT_CONFIGURED when nothing is stored', async () => {
+    const err = await expectIpcError(() => listAvailableAssignees({ projectId: 41 }))
+    expect(err.code).toBe('CREDENTIAL_NOT_CONFIGURED')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('happy path — update work package', () => {
+  const validInput = { id: 42, lockVersion: 4, subject: 'Fix login bug (revised)' }
+
+  /** What OpenProject echoes back after a successful PATCH. */
+  const echoed = {
+    ...workPackagesFixture._embedded.elements[0],
+    lockVersion: 5,
+    subject: 'Fix login bug (revised)'
+  }
+
+  it('PATCHes the work package URL with auth and returns the Zod-validated result', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    fetchMock.mockResolvedValueOnce(jsonOk(echoed))
+
+    const result = await updateWorkPackage(validInput)
+    // The echoed lock version is what the renderer re-seeds from; without it
+    // the next save would conflict against this one.
+    expect(result).toEqual(WorkPackageSchema.parse(echoed))
+    expect((result as { lockVersion: number }).lockVersion).toBe(5)
+
+    const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+    expect(url.href).toBe(`${BASE_URL}/api/v3/work_packages/42`)
+    expect(init.method).toBe('PATCH')
+    const headers = init.headers as Record<string, string>
+    expect(headers.Authorization).toBe(EXPECTED_AUTH)
+    expect(headers['Content-Type']).toBe('application/json')
+  })
+
+  it('sends only the fields the renderer actually passed, plus the lock version', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    fetchMock.mockResolvedValueOnce(jsonOk(echoed))
+
+    await updateWorkPackage({ id: 42, lockVersion: 4, statusId: 26 })
+
+    const [, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+    const body = JSON.parse(init.body as string) as Record<string, unknown>
+    // A partial update: an absent field must be absent from the body, or
+    // OpenProject would rewrite data the user never opened.
+    expect(body).toEqual({
+      lockVersion: 4,
+      _links: { status: { href: '/api/v3/statuses/26' } }
+    })
+    expect('subject' in body).toBe(false)
+    expect('startDate' in body).toBe(false)
+  })
+
+  it('keeps "clear this field" distinct from "leave it alone"', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    fetchMock.mockResolvedValueOnce(jsonOk(echoed))
+
+    await updateWorkPackage({
+      id: 42,
+      lockVersion: 4,
+      dueDate: null,
+      assigneeId: null
+    })
+
+    const [, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+    const body = JSON.parse(init.body as string) as Record<string, unknown>
+    expect(body.dueDate).toBeNull()
+    expect(body._links).toEqual({ assignee: { href: null } })
+    // The untouched date must not ride along as a null and wipe itself.
+    expect('startDate' in body).toBe(false)
+  })
+
+  it('rejects renderer-supplied invalid input without calling fetch', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+
+    for (const bad of [
+      { ...validInput, subject: '' },
+      { ...validInput, subject: 'x'.repeat(256) },
+      { ...validInput, startDate: '2026-02-31' },
+      { ...validInput, statusId: 0 },
+      { ...validInput, assigneeId: -3 },
+      { ...validInput, lockVersion: -1 }
+    ]) {
+      const err = await expectIpcError(() => updateWorkPackage(bad))
+      expect(err.code).toBe('OPENPROJECT_INVALID_INPUT')
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('rejects a renderer-supplied path in place of the numeric work package id', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+
+    // The id is the one value that reaches the request *path*.
+    for (const id of ['42/../../users', '42?x=1', '../admin', 0, 1.5]) {
+      const err = await expectIpcError(() => updateWorkPackage({ ...validInput, id }))
+      expect(err.code).toBe('OPENPROJECT_INVALID_INPUT')
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a 409 as OPENPROJECT_CONFLICT — somebody else saved first', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          _type: 'Error',
+          message: 'Could not update the resource because of conflicting modifications.'
+        }),
+        { status: 409, headers: { 'content-type': 'application/json' } }
+      )
+    )
+
+    const err = await expectIpcError(() => updateWorkPackage(validInput))
+    expect(err.code).toBe('OPENPROJECT_CONFLICT')
+  })
+
+  it('surfaces a 422 as OPENPROJECT_VALIDATION_FAILED with only the server message', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          _type: 'Error',
+          message: 'Status is not set to one of the allowed values.',
+          _embedded: { payload: { echoed: 'must-not-leak' } }
+        }),
+        { status: 422, headers: { 'content-type': 'application/json' } }
+      )
+    )
+
+    // 422 is the actionable one — the user can fix an illegal transition, so
+    // the server's own wording is worth forwarding. The echoed payload is not.
+    const err = await expectIpcError(() => updateWorkPackage(validInput))
+    expect(err.code).toBe('OPENPROJECT_VALIDATION_FAILED')
+    expect(err.message).toBe('Status is not set to one of the allowed values.')
+    expect(err.message).not.toContain('must-not-leak')
+  })
+
+  it('surfaces a 401 on the write path as OPENPROJECT_AUTH_FAILED', async () => {
+    await saveCredentials({ baseUrl: BASE_URL, apiKey: API_KEY })
+    fetchMock.mockResolvedValueOnce(new Response('', { status: 401 }))
+
+    const err = await expectIpcError(() => updateWorkPackage(validInput))
+    expect(err.code).toBe('OPENPROJECT_AUTH_FAILED')
+  })
+
+  it('rejects with CREDENTIAL_NOT_CONFIGURED when nothing is stored', async () => {
+    const err = await expectIpcError(() => updateWorkPackage(validInput))
     expect(err.code).toBe('CREDENTIAL_NOT_CONFIGURED')
     expect(fetchMock).not.toHaveBeenCalled()
   })

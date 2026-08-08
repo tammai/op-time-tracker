@@ -11,8 +11,12 @@ import {
 } from '~~/src/main/openproject/client'
 import { StatusCollectionSchema } from '~~/src/main/schemas/statuses'
 import { TimeEntrySchema } from '~~/src/main/schemas/time-entries'
+import { WorkPackageSchema } from '~~/src/main/schemas/work-packages'
 import statusesFixture from '~~/tests/fixtures/statuses-collection.json'
 import timeEntriesFixture from '~~/tests/fixtures/time-entries-collection.json'
+import workPackagesFixture from '~~/tests/fixtures/work-packages-collection.json'
+import workPackageFormFixture from '~~/tests/fixtures/work-package-form.json'
+import assigneesFixture from '~~/tests/fixtures/available-assignees-collection.json'
 
 describe('buildRequestUrl', () => {
   describe('path joining', () => {
@@ -685,6 +689,9 @@ describe('listWorkPackages — title search', () => {
         elements: ids.map((id) => ({
           id,
           _type: 'WorkPackage',
+          // Required since stage 2 — a work package without it cannot be
+          // PATCHed safely, so the schema refuses to hand one to the renderer.
+          lockVersion: 1,
           subject: `Work package ${id}`,
           _links: { self: { href: `/api/v3/work_packages/${id}` } }
         }))
@@ -1493,6 +1500,455 @@ describe('deleteTimeEntry', () => {
       await expect(client.deleteTimeEntry({ id: 77 })).rejects.toMatchObject({
         code: 'OPENPROJECT_SERVER_ERROR'
       })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Work package editing (stage 2)
+// ---------------------------------------------------------------------------
+
+describe('getWorkPackageForm', () => {
+  const BASE_URL = 'https://openproject.example.com'
+  const API_KEY = 'unit-test-api-key'
+  const EXPECTED_AUTH = `Basic ${Buffer.from(`apikey:${API_KEY}`).toString('base64')}`
+
+  const client = () => new OpenProjectClient({ baseUrl: BASE_URL, apiKey: API_KEY })
+
+  it('POSTs to the form endpoint and returns the normalized, non-HAL form', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify(workPackageFormFixture), { status: 200 })
+      )
+
+      const form = await client().getWorkPackageForm({
+        workPackageId: 34922,
+        lockVersion: 5
+      })
+
+      const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+      expect(url.href).toBe(`${BASE_URL}/api/v3/work_packages/34922/form`)
+      expect(init.method).toBe('POST')
+      expect((init.headers as Record<string, string>).Authorization).toBe(EXPECTED_AUTH)
+
+      // The renderer gets plain ids and names — never `_links`, never `_embedded`.
+      expect(form.status.allowedValues).toEqual([
+        { id: 1, name: 'To Do' },
+        { id: 21, name: 'Ready for UAT' },
+        { id: 26, name: 'QA Completed' }
+      ])
+      expect(form.assignee.writable).toBe(true)
+      expect(JSON.stringify(form)).not.toContain('_links')
+      expect(JSON.stringify(form)).not.toContain('href')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  /**
+   * The security property that makes a POST acceptable as a read: the body is
+   * built here, from one validated integer, and carries nothing the renderer
+   * supplied. If renderer content could reach it, this endpoint would become a
+   * write primitive — `_links.commit` on the response points at the real PATCH.
+   */
+  it('sends only the lock version — no renderer-supplied body content', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify(workPackageFormFixture), { status: 200 })
+      )
+
+      await client().getWorkPackageForm({
+        workPackageId: 34922,
+        lockVersion: 5,
+        // Extra keys a hostile renderer might append. None may be forwarded.
+        subject: 'pwned',
+        _links: { status: { href: '/api/v3/statuses/9' } }
+      } as unknown as Parameters<OpenProjectClient['getWorkPackageForm']>[0])
+
+      const [, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+      expect(JSON.parse(init.body as string)).toEqual({ lockVersion: 5 })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('rejects a bad id or lock version before making any request', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      for (const input of [
+        { workPackageId: 0, lockVersion: 1 },
+        { workPackageId: -1, lockVersion: 1 },
+        { workPackageId: 1.5, lockVersion: 1 },
+        { workPackageId: '42/../../etc', lockVersion: 1 },
+        { workPackageId: 42, lockVersion: -1 },
+        { workPackageId: 42, lockVersion: '1' }
+      ]) {
+        await expect(
+          client().getWorkPackageForm(
+            input as unknown as Parameters<OpenProjectClient['getWorkPackageForm']>[0]
+          )
+        ).rejects.toMatchObject({ code: 'OPENPROJECT_INVALID_INPUT' })
+      }
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('maps the form endpoint’s 409 to a conflict error — a stale lock version', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      fetchMock.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            _type: 'Error',
+            errorIdentifier: 'urn:openproject-org:api:v3:errors:UpdateConflict',
+            message: 'Could not update the resource because of conflicting modifications.'
+          }),
+          { status: 409 }
+        )
+      )
+      await expect(
+        client().getWorkPackageForm({ workPackageId: 42, lockVersion: 1 })
+      ).rejects.toMatchObject({ code: 'OPENPROJECT_CONFLICT' })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('surfaces a malformed form body as a schema error, not a crash', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      fetchMock.mockResolvedValueOnce(new Response('"a string"', { status: 200 }))
+      await expect(
+        client().getWorkPackageForm({ workPackageId: 42, lockVersion: 1 })
+      ).rejects.toMatchObject({ code: 'OPENPROJECT_SCHEMA_FAILED' })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
+describe('listAvailableAssignees', () => {
+  const BASE_URL = 'https://openproject.example.com'
+  const API_KEY = 'unit-test-api-key'
+  const client = () => new OpenProjectClient({ baseUrl: BASE_URL, apiKey: API_KEY })
+
+  it('GETs the project-scoped endpoint and returns the parsed collection', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify(assigneesFixture), { status: 200 })
+      )
+
+      const result = await client().listAvailableAssignees({ projectId: 41 })
+
+      const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+      // A *project* resource — the work-package-scoped route is a 404.
+      expect(url.pathname).toBe('/api/v3/projects/41/available_assignees')
+      expect(init.method ?? 'GET').toBe('GET')
+      expect(result._embedded.elements).toHaveLength(5)
+      expect(result._embedded.elements[0].name).toBe('Dana Okonjo')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('caps the page size it is willing to fetch and parse', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify(assigneesFixture), { status: 200 })
+      )
+      await client().listAvailableAssignees({ projectId: 41 })
+      const [url] = fetchMock.mock.calls[0] as [URL]
+      expect(Number(url.searchParams.get('pageSize'))).toBeLessThanOrEqual(MAX_PAGE_SIZE)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('rejects a bad project id before making any request', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      for (const projectId of [0, -1, 2.5, '41/../../users', null]) {
+        await expect(
+          client().listAvailableAssignees({ projectId } as unknown as {
+            projectId: number
+          })
+        ).rejects.toMatchObject({ code: 'OPENPROJECT_INVALID_INPUT' })
+      }
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('maps a 404 (project gone, or invisible to this key) to a not-found error', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      fetchMock.mockResolvedValueOnce(new Response('{}', { status: 404 }))
+      await expect(
+        client().listAvailableAssignees({ projectId: 41 })
+      ).rejects.toMatchObject({ code: 'OPENPROJECT_NOT_FOUND' })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
+describe('updateWorkPackage', () => {
+  const BASE_URL = 'https://openproject.example.com'
+  const API_KEY = 'unit-test-api-key'
+  const EXPECTED_AUTH = `Basic ${Buffer.from(`apikey:${API_KEY}`).toString('base64')}`
+  const client = () => new OpenProjectClient({ baseUrl: BASE_URL, apiKey: API_KEY })
+
+  /** The updated work package OpenProject echoes back. */
+  const updated = {
+    ...workPackagesFixture._embedded.elements[0],
+    lockVersion: 5,
+    subject: 'Fix login bug (revised)'
+  }
+
+  function okOnce(fetchMock: ReturnType<typeof vi.fn>): void {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(updated), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    )
+  }
+
+  it('PATCHes the right URL and headers, and returns the parsed work package', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      okOnce(fetchMock)
+      const result = await client().updateWorkPackage({
+        id: 42,
+        lockVersion: 4,
+        subject: 'Fix login bug (revised)'
+      })
+
+      expect(result).toEqual(WorkPackageSchema.parse(updated))
+
+      const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+      expect(url.href).toBe(`${BASE_URL}/api/v3/work_packages/42`)
+      expect(init.method).toBe('PATCH')
+      const headers = init.headers as Record<string, string>
+      expect(headers.Authorization).toBe(EXPECTED_AUTH)
+      expect(headers['Content-Type']).toBe('application/json')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  /**
+   * The core of a *partial* update, and the thing that makes it different from
+   * `updateTimeEntry`: an untouched field must be absent from the body, or the
+   * save silently rewrites data the user never looked at.
+   */
+  it('sends only the changed fields, plus lockVersion', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      okOnce(fetchMock)
+      await client().updateWorkPackage({ id: 42, lockVersion: 4, statusId: 3 })
+
+      const [, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+      const body = JSON.parse(init.body as string) as Record<string, unknown>
+      expect(body).toEqual({
+        lockVersion: 4,
+        _links: { status: { href: '/api/v3/statuses/3' } }
+      })
+      for (const key of ['subject', 'startDate', 'dueDate', 'id']) {
+        expect(Object.prototype.hasOwnProperty.call(body, key)).toBe(false)
+      }
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('distinguishes an omitted date from an explicitly cleared one', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      okOnce(fetchMock)
+      await client().updateWorkPackage({ id: 42, lockVersion: 4, dueDate: null })
+      const [, cleared] = fetchMock.mock.calls[0] as [URL, RequestInit]
+      const clearedBody = JSON.parse(cleared.body as string) as Record<string, unknown>
+      expect(Object.prototype.hasOwnProperty.call(clearedBody, 'dueDate')).toBe(true)
+      expect(clearedBody.dueDate).toBeNull()
+      expect(Object.prototype.hasOwnProperty.call(clearedBody, 'startDate')).toBe(false)
+
+      okOnce(fetchMock)
+      await client().updateWorkPackage({ id: 42, lockVersion: 4, subject: 'Untouched dates' })
+      const [, untouched] = fetchMock.mock.calls[1] as [URL, RequestInit]
+      const untouchedBody = JSON.parse(untouched.body as string) as Record<string, unknown>
+      expect(Object.prototype.hasOwnProperty.call(untouchedBody, 'dueDate')).toBe(false)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('distinguishes an omitted assignee from an explicitly cleared one', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      okOnce(fetchMock)
+      await client().updateWorkPackage({ id: 42, lockVersion: 4, assigneeId: null })
+      const [, cleared] = fetchMock.mock.calls[0] as [URL, RequestInit]
+      expect(
+        (JSON.parse(cleared.body as string) as { _links: unknown })._links
+      ).toEqual({ assignee: { href: null } })
+
+      okOnce(fetchMock)
+      await client().updateWorkPackage({ id: 42, lockVersion: 4, subject: 'No assignee change' })
+      const [, untouched] = fetchMock.mock.calls[1] as [URL, RequestInit]
+      expect(JSON.parse(untouched.body as string)).not.toHaveProperty('_links')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('builds every _links href itself from the validated numeric ids', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      okOnce(fetchMock)
+      await client().updateWorkPackage({
+        id: 42,
+        lockVersion: 4,
+        statusId: 3,
+        typeId: 1,
+        priorityId: 8,
+        assigneeId: 11
+      })
+      const [, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+      expect((JSON.parse(init.body as string) as { _links: unknown })._links).toEqual({
+        status: { href: '/api/v3/statuses/3' },
+        type: { href: '/api/v3/types/1' },
+        priority: { href: '/api/v3/priorities/8' },
+        assignee: { href: '/api/v3/users/11' }
+      })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('rejects invalid input before making any request', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const badInputs = [
+        { id: 0, lockVersion: 4 },
+        { id: -1, lockVersion: 4 },
+        { id: 4.5, lockVersion: 4 },
+        { id: '42', lockVersion: 4 },
+        { id: 42, lockVersion: -1 },
+        { id: 42, lockVersion: '4' },
+        // Renderer free text, bounded before it is sent.
+        { id: 42, lockVersion: 4, subject: '' },
+        { id: 42, lockVersion: 4, subject: '   ' },
+        { id: 42, lockVersion: 4, subject: 'x'.repeat(256) },
+        { id: 42, lockVersion: 4, startDate: '2026-02-31' },
+        { id: 42, lockVersion: 4, dueDate: 'tomorrow' },
+        // An href where an id belongs — the renderer never picks a URL.
+        { id: 42, lockVersion: 4, statusId: '/api/v3/statuses/9' },
+        { id: 42, lockVersion: 4, assigneeId: 0 },
+        { id: 42, lockVersion: 4, typeId: null }
+      ]
+      for (const input of badInputs) {
+        await expect(
+          client().updateWorkPackage(
+            input as unknown as Parameters<OpenProjectClient['updateWorkPackage']>[0]
+          )
+        ).rejects.toMatchObject({ code: 'OPENPROJECT_INVALID_INPUT' })
+      }
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('maps HTTP 409 to a conflict error the renderer can branch on', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      fetchMock.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            _type: 'Error',
+            errorIdentifier: 'urn:openproject-org:api:v3:errors:UpdateConflict',
+            message: 'Could not update the resource because of conflicting modifications.'
+          }),
+          { status: 409 }
+        )
+      )
+      await expect(
+        client().updateWorkPackage({ id: 42, lockVersion: 4, subject: 'Stale' })
+      ).rejects.toMatchObject({ code: 'OPENPROJECT_CONFLICT' })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('maps HTTP 422 to a validation error carrying only the server message', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const body = JSON.stringify({
+        _type: 'Error',
+        errorIdentifier:
+          'urn:openproject-org:api:v3:errors:PropertyConstraintViolation',
+        message: 'Status is not set to one of the allowed values.',
+        _embedded: { payload: { secret: 'must-not-leak' } }
+      })
+      fetchMock.mockResolvedValueOnce(new Response(body, { status: 422 }))
+      await expect(
+        client().updateWorkPackage({ id: 42, lockVersion: 4, statusId: 99 })
+      ).rejects.toMatchObject({
+        code: 'OPENPROJECT_VALIDATION_FAILED',
+        status: 422,
+        message: 'Status is not set to one of the allowed values.'
+      })
+
+      fetchMock.mockResolvedValueOnce(new Response(body, { status: 422 }))
+      await expect(
+        client()
+          .updateWorkPackage({ id: 42, lockVersion: 4, statusId: 99 })
+          .catch((e: Error) => e.message)
+      ).resolves.not.toContain('must-not-leak')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('never leaks the API key into an error message on the write path', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      for (const status of [401, 409, 422, 500]) {
+        fetchMock.mockResolvedValueOnce(new Response('{}', { status }))
+        const message = await client()
+          .updateWorkPackage({ id: 42, lockVersion: 4, subject: 'x' })
+          .catch((e: Error) => e.message)
+        expect(message).not.toContain(API_KEY)
+        expect(message).not.toContain(EXPECTED_AUTH)
+      }
     } finally {
       vi.unstubAllGlobals()
     }

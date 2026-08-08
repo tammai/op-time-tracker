@@ -32,6 +32,22 @@ export const WORK_PACKAGE_PATH = '/api/v3/work_packages'
 export const TIME_ENTRY_PATH = '/api/v3/time_entries'
 
 /**
+ * The collections a work package's editable `_links` point into.
+ *
+ * Both directions run through these constants: the parsers below read an id
+ * out of a server-supplied href, and `buildWorkPackagePatchPayload` writes a
+ * fresh href from a validated numeric id. Sharing the constant is what keeps
+ * "the id we read" and "the href we send" from drifting apart.
+ */
+export const STATUS_PATH = '/api/v3/statuses'
+export const TYPE_PATH = '/api/v3/types'
+export const PRIORITY_PATH = '/api/v3/priorities'
+export const PROJECT_PATH = '/api/v3/projects'
+export const USER_PATH = '/api/v3/users'
+export const GROUP_PATH = '/api/v3/groups'
+export const PLACEHOLDER_USER_PATH = '/api/v3/placeholder_users'
+
+/**
  * Parse a resource id out of a HAL href under `collectionPath`.
  *
  * The trailing segment is validated as a positive integer rather than
@@ -39,7 +55,7 @@ export const TIME_ENTRY_PATH = '/api/v3/time_entries'
  * A leading origin (`https://host/api/v3/…`) is tolerated: the match is
  * anchored on the collection path and the end of the string, not on the start.
  */
-function parseResourceIdFromHref(
+export function parseResourceIdFromHref(
   collectionPath: string,
   href: unknown
 ): number | null {
@@ -69,4 +85,53 @@ export function parseActivityIdFromHref(href: unknown): number | null {
  */
 export function parseWorkPackageIdFromHref(href: unknown): number | null {
   return parseResourceIdFromHref(WORK_PACKAGE_PATH, href)
+}
+
+/**
+ * Parsers for the links the work-package editor reads.
+ *
+ * Each is anchored on its own collection, so a status href is never mistaken
+ * for a type href — the ids overlap freely across collections, and a
+ * cross-collection match would silently produce a valid-looking but wrong
+ * request.
+ */
+export function parseStatusIdFromHref(href: unknown): number | null {
+  return parseResourceIdFromHref(STATUS_PATH, href)
+}
+
+export function parseTypeIdFromHref(href: unknown): number | null {
+  return parseResourceIdFromHref(TYPE_PATH, href)
+}
+
+export function parsePriorityIdFromHref(href: unknown): number | null {
+  return parseResourceIdFromHref(PRIORITY_PATH, href)
+}
+
+/**
+ * Parse a project id out of a `_links.project.href`.
+ *
+ * The renderer needs it because the assignee options come from a *project*
+ * resource (`/api/v3/projects/{id}/available_assignees`) — see PLAN.md,
+ * "Verified API shapes". A number is what crosses IPC; the main process
+ * rebuilds the path from it.
+ */
+export function parseProjectIdFromHref(href: unknown): number | null {
+  return parseResourceIdFromHref(PROJECT_PATH, href)
+}
+
+/**
+ * Parse a principal id out of an assignee href.
+ *
+ * A principal is a user, a group, or a placeholder user, and OpenProject links
+ * each from its own collection — so all three are tried. Only the id is
+ * returned: which collection it came from is deliberately dropped, because the
+ * editor only ever writes a `/api/v3/users/{id}` href back (assigning a group
+ * is out of scope for this stage).
+ */
+export function parsePrincipalIdFromHref(href: unknown): number | null {
+  for (const path of [USER_PATH, GROUP_PATH, PLACEHOLDER_USER_PATH]) {
+    const id = parseResourceIdFromHref(path, href)
+    if (id !== null) return id
+  }
+  return null
 }

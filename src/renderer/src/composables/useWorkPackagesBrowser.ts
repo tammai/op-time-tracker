@@ -13,6 +13,7 @@ import {
   type WorkPackageFilters
 } from '@renderer/composables/queries/work-packages'
 import { useStatusResolution } from '@renderer/composables/queries/statuses'
+import { useWorkPackageEditor } from '@renderer/composables/useWorkPackageEditor'
 import {
   decideWorkPackageSearch,
   isPriorityWorkPackage,
@@ -337,8 +338,71 @@ export function useWorkPackagesBrowser() {
    */
   const selectedWorkPackage = ref<WorkPackage | null>(null)
 
+  /**
+   * Editing state for whatever is selected.
+   *
+   * Instantiated here rather than inside the detail panel because the *list*
+   * has to consult it: switching rows with unsaved edits has to ask first, and
+   * a panel-owned editor would leave the list unable to see that. It takes the
+   * selection ref both ways — a successful save writes the echoed work package
+   * straight back, which is what refreshes the panel, the row, and the lock
+   * version in one move.
+   */
+  const editor = useWorkPackageEditor(selectedWorkPackage)
+
+  /**
+   * An action the user asked for that would have thrown unsaved edits away.
+   *
+   * Held rather than performed, so the UI can ask. Both kinds resolve through
+   * the same pair of answers, because to the user they are the same question.
+   */
+  type PendingAction =
+    | { kind: 'select'; workPackage: WorkPackage }
+    | { kind: 'close' }
+
+  const pendingAction = ref<PendingAction | null>(null)
+
   function select(wp: WorkPackage): void {
+    // Re-selecting the row already open is not a switch, and must not prompt.
+    if (wp.id === selectedWorkPackage.value?.id) return
+    if (editor.isDirty.value) {
+      pendingAction.value = { kind: 'select', workPackage: wp }
+      return
+    }
     selectedWorkPackage.value = wp
+  }
+
+  /**
+   * Ask whether the screen may close. `false` means it may not — the caller
+   * leaves it open and the confirm appears.
+   *
+   * A predicate rather than a "close" command: the modal owns its own `open`
+   * model, and inverting that would mean this composable reaching into the
+   * component's visibility.
+   */
+  function requestClose(): boolean {
+    if (!editor.isDirty.value) return true
+    pendingAction.value = { kind: 'close' }
+    return false
+  }
+
+  /**
+   * Throw the edits away and do what was asked. Returns the kind that was
+   * pending so the caller can finish a close — the one part this composable
+   * can't do itself.
+   */
+  function discardPendingAction(): PendingAction['kind'] | null {
+    const action = pendingAction.value
+    pendingAction.value = null
+    if (action === null) return null
+    editor.cancelEditing()
+    if (action.kind === 'select') selectedWorkPackage.value = action.workPackage
+    return action.kind
+  }
+
+  /** Keep the edits; the action is abandoned. */
+  function keepEditing(): void {
+    pendingAction.value = null
   }
 
   watch(
@@ -352,9 +416,13 @@ export function useWorkPackagesBrowser() {
         if (list.length > 0) selectedWorkPackage.value = list[0]
         return
       }
-      // Still listed → adopt the fresher copy, so a refetch (and, in stage 2, a
-      // save) updates the panel. Gone from the list → keep what we hold; the
+      // Still listed → adopt the fresher copy, so a refetch (or a save)
+      // updates the panel. Gone from the list → keep what we hold; the
       // selection outlives the list it came from.
+      //
+      // Safe to do mid-edit: the editor re-seeds on row *identity*, so a
+      // fresher revision of the row being edited doesn't touch the draft, and
+      // it saves against the lock version it snapshotted rather than this one.
       const fresh = list.find((wp) => wp.id === current.id)
       if (fresh) selectedWorkPackage.value = fresh
     },
@@ -422,6 +490,13 @@ export function useWorkPackagesBrowser() {
     // Selection
     selectedWorkPackage,
     select,
+
+    // Editing
+    editor,
+    pendingAction,
+    requestClose,
+    discardPendingAction,
+    keepEditing,
 
     // Actions
     openInBrowser,

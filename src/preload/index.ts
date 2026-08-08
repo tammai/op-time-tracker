@@ -9,7 +9,10 @@ import type {
   CreateTimeEntryInput,
   UpdateTimeEntryInput,
   DeleteTimeEntryInput,
-  OpenWorkPackageInBrowserInput
+  OpenWorkPackageInBrowserInput,
+  WorkPackageFormInput,
+  AvailableAssigneesInput,
+  UpdateWorkPackageInput
 } from './types'
 
 const bridge: OpenProjectBridge = {
@@ -54,6 +57,17 @@ const bridge: OpenProjectBridge = {
   listTimeEntryActivities: (input?: ListTimeEntryActivitiesInput) =>
     ipcRenderer.invoke('op:openproject:list-time-entry-activities', input),
 
+  // Work package editing (stage 2). `getWorkPackageForm` is a POST that reads:
+  // its body is built in the main process from the validated lock version and
+  // carries nothing from here. `updateWorkPackage` is a *partial* update — an
+  // omitted field is left alone, `null` clears.
+  getWorkPackageForm: (input: WorkPackageFormInput) =>
+    ipcRenderer.invoke('op:openproject:get-work-package-form', input),
+  listAvailableAssignees: (input: AvailableAssigneesInput) =>
+    ipcRenderer.invoke('op:openproject:list-available-assignees', input),
+  updateWorkPackage: (input: UpdateWorkPackageInput) =>
+    ipcRenderer.invoke('op:openproject:update-work-package', input),
+
   // The one channel that hands a URL to the operating system. It takes a
   // numeric id, never a URL — the main process builds the target itself from
   // the stored base URL and re-asserts http(s) before opening it. See
@@ -79,9 +93,17 @@ export type {
   UpdateTimeEntryInput,
   DeleteTimeEntryInput,
   OpenWorkPackageInBrowserInput,
+  WorkPackageFormInput,
+  AvailableAssigneesInput,
+  UpdateWorkPackageInput,
   WorkPackage,
   WorkPackageCollection,
   WorkPackageLinks,
+  WorkPackageForm,
+  WorkPackageFormField,
+  AllowedValue,
+  Principal,
+  PrincipalCollection,
   TimeEntry,
   TimeEntryCollection,
   TimeEntryLinks,

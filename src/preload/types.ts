@@ -21,8 +21,18 @@
 import type {
   WorkPackage,
   WorkPackageCollection,
-  WorkPackageLinks
+  WorkPackageLinks,
+  WorkPackageForm,
+  WorkPackageFormField,
+  AllowedValue,
+  WorkPackageFormInput,
+  AvailableAssigneesInput,
+  UpdateWorkPackageInput
 } from '../main/schemas/work-packages'
+import type {
+  Principal,
+  PrincipalCollection
+} from '../main/schemas/principals'
 import type {
   TimeEntry,
   TimeEntryCollection,
@@ -47,7 +57,8 @@ import type {
   OpenProjectServerError,
   OpenProjectHttpError,
   OpenProjectSchemaError,
-  OpenProjectTimeoutError
+  OpenProjectTimeoutError,
+  OpenProjectConflictError
 } from '../main/openproject/client'
 
 // Re-export so the renderer can import these types via
@@ -57,6 +68,14 @@ export type {
   WorkPackage,
   WorkPackageCollection,
   WorkPackageLinks,
+  WorkPackageForm,
+  WorkPackageFormField,
+  AllowedValue,
+  WorkPackageFormInput,
+  AvailableAssigneesInput,
+  UpdateWorkPackageInput,
+  Principal,
+  PrincipalCollection,
   TimeEntry,
   TimeEntryCollection,
   TimeEntryLinks,
@@ -76,7 +95,8 @@ export type {
   OpenProjectServerError,
   OpenProjectHttpError,
   OpenProjectSchemaError,
-  OpenProjectTimeoutError
+  OpenProjectTimeoutError,
+  OpenProjectConflictError
 }
 
 export interface SaveCredentialsInput {
@@ -286,6 +306,78 @@ export interface OpenProjectBridge {
   openWorkPackageInBrowser(
     input: OpenWorkPackageInBrowserInput
   ): Promise<void>
+
+  /**
+   * Read the editable schema of one work package: which fields may be written,
+   * and — for status, type and priority — which values that work package's
+   * workflow actually allows. This is the only source that honours "only legal
+   * transitions"; the global `listStatuses()` cannot know which are reachable
+   * from where the work package currently is.
+   *
+   * A POST that reads. OpenProject's form endpoint validates a hypothetical
+   * payload and answers with the resulting schema without persisting anything.
+   * The body is built in the **main process** and holds exactly the validated
+   * `lockVersion` — nothing supplied here is ever forwarded, so this channel
+   * cannot be used as a write. `lockVersion` is required, not decorative: the
+   * endpoint answers HTTP 409 without one.
+   *
+   * The response is flattened out of HAL before it crosses IPC: each field
+   * arrives as `{ writable, allowedValues: { id, name }[] }`, so the renderer
+   * never handles an href or an `_embedded` block.
+   *
+   * Rejects with `{ code, message }`: `OPENPROJECT_INVALID_INPUT` for a bad id
+   * or lock version (before any request), `OPENPROJECT_CONFLICT` when the lock
+   * version is already stale, `OPENPROJECT_NOT_FOUND` when the work package is
+   * gone or invisible to the configured key.
+   */
+  getWorkPackageForm(input: WorkPackageFormInput): Promise<WorkPackageForm>
+
+  /**
+   * The principals a work package may be assigned to — its **project's**
+   * assignable members.
+   *
+   * Takes a `projectId`, not a work package id: the work-package-scoped
+   * `available_assignees` route does not exist (HTTP 404), and the form's
+   * `assignee` allowed-values href points at the project collection instead.
+   * The caller reads the project id off the work package it already holds and
+   * sends the number; the main process rebuilds the path, so a server-supplied
+   * href never steers the request.
+   *
+   * Elements may be `User`, `Group` or `PlaceholderUser` depending on the
+   * instance. Rejects with `{ code, message }`: `OPENPROJECT_INVALID_INPUT`
+   * for a non-positive-integer id, `OPENPROJECT_NOT_FOUND` when the project is
+   * gone or invisible.
+   */
+  listAvailableAssignees(
+    input: AvailableAssigneesInput
+  ): Promise<PrincipalCollection>
+
+  /**
+   * Update a work package, returning it as OpenProject echoes it back.
+   *
+   * **A partial update, not a replacement** — the opposite of
+   * `updateTimeEntry`. Send only what changed: a field left out is untouched on
+   * the server, while `null` on a date or on `assigneeId` explicitly *clears*
+   * it. Those two are not interchangeable; passing every field would rewrite
+   * data the user never edited.
+   *
+   * `lockVersion` makes the write conditional. It must be the value from the
+   * work package as loaded; a save must therefore re-read it from the response
+   * of the previous save, or the next one conflicts against itself.
+   *
+   * Same trust model as `createTimeEntry`: plain numeric ids only, all
+   * validated in the main process (`UpdateWorkPackageInputSchema`), with every
+   * `_links` href built there. `subject` is length-bounded and dates must be
+   * real `YYYY-MM-DD` days before any request is made.
+   *
+   * Rejects with `{ code, message }`: `OPENPROJECT_INVALID_INPUT` (bad input,
+   * no request made), **`OPENPROJECT_CONFLICT`** when someone else changed the
+   * work package first — refetch and discard rather than retrying —
+   * `OPENPROJECT_VALIDATION_FAILED` carrying OpenProject's own message when it
+   * refuses the change (an illegal transition, a required custom field), and
+   * `OPENPROJECT_NOT_FOUND` when the work package is gone.
+   */
+  updateWorkPackage(input: UpdateWorkPackageInput): Promise<WorkPackage>
 }
 
 declare global {

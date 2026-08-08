@@ -10,6 +10,7 @@ import {
   STATUS_COLOR_DEFAULT,
   formatWorkPackageDate,
   workPackageAssigneeLabel,
+  workPackagePriorityLabel,
   workPackageProjectLabel,
   workPackageStatusColorClass,
   workPackageStatusLabel,
@@ -202,6 +203,11 @@ describe('type / status / project labels', () => {
     expect(workPackageProjectLabel(wp)).toBe('Time Tracker')
   })
 
+  it('read the priority link title', () => {
+    const wp = makeWp({ priority: { href: '/api/v3/priorities/8', title: 'High' } })
+    expect(workPackagePriorityLabel(wp)).toBe('High')
+  })
+
   it('fall back to an em dash when the link or its title is absent', () => {
     // `href: null` is how HAL — and the `HalLinkSchema` that models it —
     // represents an unset link; `project` is omitted entirely here.
@@ -212,5 +218,6 @@ describe('type / status / project labels', () => {
     expect(workPackageTypeLabel(wp)).toBe(EM_DASH)
     expect(workPackageStatusLabel(wp)).toBe(EM_DASH)
     expect(workPackageProjectLabel(wp)).toBe(EM_DASH)
+    expect(workPackagePriorityLabel(wp)).toBe(EM_DASH)
   })
 })

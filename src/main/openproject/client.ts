@@ -4,8 +4,26 @@ import type { Credentials } from '../credentials'
 
 import {
   WorkPackageCollectionSchema,
-  type WorkPackageCollection
+  WorkPackageSchema,
+  WorkPackageFormResponseSchema,
+  WorkPackageFormSchema,
+  WorkPackageFormInputSchema,
+  AvailableAssigneesInputSchema,
+  UpdateWorkPackageInputSchema,
+  buildWorkPackagePatchPayload,
+  normalizeWorkPackageForm,
+  type WorkPackage,
+  type WorkPackageCollection,
+  type WorkPackageForm,
+  type WorkPackageFormInput,
+  type AvailableAssigneesInput,
+  type UpdateWorkPackageInput
 } from '../schemas/work-packages'
+import {
+  PrincipalCollectionSchema,
+  type PrincipalCollection
+} from '../schemas/principals'
+import { PROJECT_PATH } from '../../shared/utils/hal'
 import {
   TimeEntryCollectionSchema,
   TimeEntrySchema,
@@ -146,6 +164,29 @@ export class OpenProjectValidationError extends OpenProjectError {
   ) {
     super('OPENPROJECT_VALIDATION_FAILED', message, cause)
     this.name = 'OpenProjectValidationError'
+  }
+}
+
+/**
+ * The resource changed on the server since it was loaded (HTTP 409).
+ *
+ * OpenProject uses optimistic locking: a write carries the `lockVersion` the
+ * client last saw, and the server refuses it if that number is stale. Its own
+ * code is what lets the renderer tell "somebody else edited this" apart from
+ * every other 4xx — the two want completely different handling (refetch and
+ * discard, versus show the message and let the user retry), and before this
+ * class a 409 was indistinguishable from a generic `OPENPROJECT_HTTP_ERROR`.
+ *
+ * The message is deliberately resource-neutral: the *form* endpoint 409s on a
+ * stale lock version too, and the renderer owns the user-facing wording.
+ */
+export class OpenProjectConflictError extends OpenProjectError {
+  constructor(
+    message = 'This item was changed on the server since you loaded it.',
+    readonly status: number = 409
+  ) {
+    super('OPENPROJECT_CONFLICT', message)
+    this.name = 'OpenProjectConflictError'
   }
 }
 
@@ -587,6 +628,14 @@ const ALL_ENTRIES_PAGE_SIZE = 200
 const MAX_FOLLOWED_PAGES = 25
 
 /**
+ * Page size for `listAvailableAssignees`. A project's assignable membership is
+ * a handful to a few dozen people; the select has no pagination, so a single
+ * generous page is the whole list in practice. Still passed through
+ * `clampPageSize` so the ceiling is enforced in one place.
+ */
+const AVAILABLE_ASSIGNEES_PAGE_SIZE = 200
+
+/**
  * The single OpenProject HTTP client. Constructed in the main process with
  * validated `Credentials`; the API key lives only on the instance and is
  * never logged or returned.
@@ -828,6 +877,133 @@ export class OpenProjectClient {
   }
 
   /**
+   * `POST /api/v3/work_packages/{id}/form` — the allowed values for the
+   * editable fields of one work package.
+   *
+   * A POST that reads. OpenProject's form endpoint validates a hypothetical
+   * payload and answers with the resulting schema; it never persists anything
+   * (the response's own `_links.commit` points at the separate PATCH). Two
+   * things keep that safe:
+   *
+   * 1. The body is built here and contains exactly one key — the validated
+   *    integer `lockVersion`. No renderer-supplied content is ever forwarded,
+   *    so this cannot be turned into a write primitive
+   *    (`.opencode/rules/security.md`).
+   * 2. `workPackageId` is a validated positive integer before it reaches the
+   *    request path.
+   *
+   * `lockVersion` is required, not optional: verified against a live instance,
+   * an empty payload answers HTTP 409 rather than 200 (see PLAN.md, "Verified
+   * API shapes"). That makes a stale lock version surface here, before the user
+   * has typed anything — the same `OPENPROJECT_CONFLICT` the save path raises.
+   *
+   * The response is parsed leniently, flattened out of HAL by
+   * `normalizeWorkPackageForm`, and then `.parse()`d again — so the renderer
+   * receives plain `{ id, name }` lists and never sees an href. This mirrors
+   * `listTimeEntryActivities`, which reshapes the time-entry form the same way.
+   */
+  async getWorkPackageForm(input: WorkPackageFormInput): Promise<WorkPackageForm> {
+    const parsed = WorkPackageFormInputSchema.safeParse(input)
+    if (!parsed.success) {
+      throw new OpenProjectInvalidInputError(
+        parsed.error.issues[0]?.message ?? 'The work package reference is invalid.',
+        parsed.error
+      )
+    }
+    const { workPackageId, lockVersion } = parsed.data
+
+    const url = buildRequestUrl(
+      this.creds.baseUrl,
+      `${WORK_PACKAGE_PATH}/${workPackageId}/form`
+    )
+    const body = await this.request(url, {
+      method: 'POST',
+      // Rebuilt from the validated integer — never `parsed.data` spread, and
+      // never `input`, so no extra renderer key can ride along.
+      body: { lockVersion }
+    })
+
+    const form = this.parseWithSchema(body, WorkPackageFormResponseSchema)
+    return this.parseWithSchema(normalizeWorkPackageForm(form), WorkPackageFormSchema)
+  }
+
+  /**
+   * `GET /api/v3/projects/{id}/available_assignees` — who this work package
+   * may be assigned to.
+   *
+   * A **project** resource, not a work-package one. The work-package-scoped
+   * `available_assignees` route the spec assumed answers HTTP 404 on a real
+   * instance; the form's `assignee._links.allowedValues` href points here
+   * instead (PLAN.md, "Verified API shapes"). That href is deliberately *not*
+   * followed — the renderer parses the project id out of the work package it
+   * already holds, sends the number, and this method rebuilds the path. A
+   * server-supplied href never steers a request URL (the Stage 1 `shell.ts`
+   * lesson, applied to the API side).
+   *
+   * The page size is fixed and clamped rather than caller-supplied: a project's
+   * assignable membership is small, and a select with no pagination has nothing
+   * to do with a larger page anyway.
+   */
+  async listAvailableAssignees(
+    input: AvailableAssigneesInput
+  ): Promise<PrincipalCollection> {
+    const parsed = AvailableAssigneesInputSchema.safeParse(input)
+    if (!parsed.success) {
+      throw new OpenProjectInvalidInputError(
+        parsed.error.issues[0]?.message ?? 'The project reference is invalid.',
+        parsed.error
+      )
+    }
+
+    const url = buildRequestUrl(
+      this.creds.baseUrl,
+      `${PROJECT_PATH}/${parsed.data.projectId}/available_assignees`,
+      { pageSize: String(clampPageSize(AVAILABLE_ASSIGNEES_PAGE_SIZE)) }
+    )
+    const body = await this.request(url)
+    return this.parseWithSchema(body, PrincipalCollectionSchema)
+  }
+
+  /**
+   * `PATCH /api/v3/work_packages/{id}` — a **partial** update.
+   *
+   * Deliberately unlike `updateTimeEntry`, which is a full replacement. Here
+   * only the fields the caller actually passed are sent, plus the `lockVersion`
+   * that makes the write conditional. The distinction that matters is between
+   * *absent* and *null*: an absent field is left alone by OpenProject, while
+   * `null` (a date) or `{ href: null }` (the assignee) clears it. Collapsing
+   * those two would either make clearing inexpressible or wipe fields the user
+   * never touched — see `buildWorkPackagePatchPayload`, where that decision
+   * lives and is tested.
+   *
+   * Same trust model as `createTimeEntry`: `input` comes from the renderer, so
+   * it is validated *here* rather than at the caller, `subject` is length-bound
+   * before it is sent, dates must be real calendar days, and every `_links`
+   * href is built from a validated numeric id. `id` is the only value reaching
+   * the request path, and it is a positive integer by then.
+   *
+   * A stale `lockVersion` answers HTTP 409 → `OpenProjectConflictError`, which
+   * the renderer uses to refetch and discard rather than retrying blindly.
+   */
+  async updateWorkPackage(input: UpdateWorkPackageInput): Promise<WorkPackage> {
+    const parsed = UpdateWorkPackageInputSchema.safeParse(input)
+    if (!parsed.success) {
+      throw new OpenProjectInvalidInputError(
+        parsed.error.issues[0]?.message ?? 'The work package details are invalid.',
+        parsed.error
+      )
+    }
+
+    const payload = buildWorkPackagePatchPayload(parsed.data)
+    const url = buildRequestUrl(
+      this.creds.baseUrl,
+      `${WORK_PACKAGE_PATH}/${parsed.data.id}`
+    )
+    const body = await this.request(url, { method: 'PATCH', body: payload })
+    return this.parseWithSchema(body, WorkPackageSchema)
+  }
+
+  /**
    * Probe the API root (`GET /api/v3`) — used by the test-connection
    * handler. Returns `true` on 2xx, throws a typed error otherwise.
    */
@@ -941,6 +1117,13 @@ export class OpenProjectClient {
         400
       )
     }
+    if (res.status === 409) {
+      // Optimistic-locking failure. The body carries OpenProject's own
+      // "conflicting modifications" text, which says nothing the code doesn't;
+      // the renderer needs the *code* so it can refetch and discard, so the
+      // message stays ours and no server body is forwarded.
+      throw new OpenProjectConflictError()
+    }
     if (res.status === 422) {
       // The only place a server-authored string is forwarded — and only the
       // `message` fields declared by `OpenProjectApiErrorSchema`, capped in
@@ -998,6 +1181,11 @@ export class OpenProjectClient {
 // canonical definitions live in `src/main/schemas/`.
 export {
   WorkPackageCollectionSchema,
+  WorkPackageFormSchema,
+  WorkPackageFormInputSchema,
+  AvailableAssigneesInputSchema,
+  UpdateWorkPackageInputSchema,
+  PrincipalCollectionSchema,
   TimeEntryCollectionSchema,
   TimeEntryActivityCollectionSchema,
   CreateTimeEntryInputSchema,
@@ -1009,5 +1197,10 @@ export type {
   CreateTimeEntryInput,
   UpdateTimeEntryInput,
   DeleteTimeEntryInput,
-  TimeEntryActivityCollection
+  TimeEntryActivityCollection,
+  WorkPackageForm,
+  WorkPackageFormInput,
+  AvailableAssigneesInput,
+  UpdateWorkPackageInput,
+  PrincipalCollection
 }
